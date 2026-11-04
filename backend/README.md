@@ -54,6 +54,16 @@ In order to ensure that the Laravel community is welcoming to all, please review
 
 If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
 
+## Initial production administrator
+
+The database seeder creates the initial `Super Admin` account for Nicky Mingo at
+`ceo@vendeymas.com`; it does not create demo customers, projects, payments, or
+other user accounts. Before running it for the first time, set `SEED_CEO_PASSWORD`
+through the deployment secret manager, then run `php artisan db:seed --force`.
+For compatibility with an existing deployment, `SEED_NICKY_ADMIN_PASSWORD` is
+also accepted as a fallback. The seeder does not change the password if this
+account already exists and does not delete any existing database users.
+
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).

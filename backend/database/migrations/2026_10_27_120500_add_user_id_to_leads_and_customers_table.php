@@ -13,19 +13,31 @@ return new class extends Migration
     public function up(): void
     {
         // 1. Agregar user_id y discard_reason a la tabla leads
-        Schema::table('leads', function (Blueprint $table) {
-            $table->foreignId('user_id')->nullable()->after('project_id')->constrained('users')->nullOnDelete();
-            $table->string('discard_reason')->nullable()->after('stage');
-        });
+        if (!Schema::hasColumn('leads', 'user_id') || !Schema::hasColumn('leads', 'discard_reason')) {
+            Schema::table('leads', function (Blueprint $table) {
+                if (!Schema::hasColumn('leads', 'user_id')) {
+                    $table->foreignId('user_id')->nullable()->after('project_id')->constrained('users')->nullOnDelete();
+                }
+                if (!Schema::hasColumn('leads', 'discard_reason')) {
+                    $table->string('discard_reason')->nullable()->after('stage');
+                }
+            });
+        }
 
         // 2. Agregar assigned_user_id a la tabla customers
-        Schema::table('customers', function (Blueprint $table) {
-            $table->foreignId('assigned_user_id')->nullable()->after('id_card')->constrained('users')->nullOnDelete();
-        });
+        if (!Schema::hasColumn('customers', 'assigned_user_id')) {
+            Schema::table('customers', function (Blueprint $table) {
+                $table->foreignId('assigned_user_id')->nullable()->after('id_card')->constrained('users')->nullOnDelete();
+            });
+        }
 
-        // 3. Asignar registros previos al usuario principal o asesor comercial
+        // 3. Asignar registros previos solo cuando exista un usuario real.
         $firstUser = DB::table('users')->orderBy('id', 'asc')->first();
-        $adminId = $firstUser ? $firstUser->id : 1;
+        if (!$firstUser) {
+            return;
+        }
+
+        $adminId = $firstUser->id;
 
         // Buscar asesor comercial si existe para distribuir algunos prospectos de prueba
         $asesorUser = DB::table('users')

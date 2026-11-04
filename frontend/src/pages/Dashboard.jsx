@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -27,6 +27,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const initialStatsRequested = useRef(false);
 
   const downloadBackup = async () => {
     setDownloadingBackup(true);
@@ -66,6 +67,8 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
+    if (initialStatsRequested.current) return;
+    initialStatsRequested.current = true;
     fetchStats();
   }, []);
 

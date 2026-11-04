@@ -75,6 +75,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
   // ── Firmas ───────────────────────────────────────────────────────────────
   const sigCanvasRef   = useRef(null);   // firma táctil del cliente
   const sigWrapperRef  = useRef(null);   // div contenedor del canvas (para resize)
+  const initialDataRequested = useRef(false);
   const [emitterSig,   setEmitterSig]   = useState(null);    // firma del emisor (perfil)
   const [emitterName,  setEmitterName]  = useState('');
   const [canvasDims,   setCanvasDims]   = useState({ w: 400, h: 160 });
@@ -90,7 +91,12 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
   const needsBankRef = BANK_METHODS.some(m => payMethod.toLowerCase().includes(m));
 
   // ── 1. Cargar catálogos y firma del emisor ────────────────────────────────
-  useEffect(() => { loadCatalogs(); loadEmitterSignature(); }, []);
+  useEffect(() => {
+    if (initialDataRequested.current) return;
+    initialDataRequested.current = true;
+    loadCatalogs();
+    loadEmitterSignature();
+  }, []);
 
   const loadEmitterSignature = async () => {
     try {

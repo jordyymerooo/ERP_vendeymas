@@ -27,10 +27,6 @@ axios.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    const role = localStorage.getItem('user_role');
-    if (role) {
-      config.headers['X-Simulated-Role'] = role;
-    }
     return config;
   },
   (error) => Promise.reject(error)
@@ -57,7 +53,7 @@ axios.interceptors.response.use(
 // COMPONENTE ENVOLTORIO DE PROTECCIÓN DE RUTAS
 // ==========================================================
 function ProtectedRoute() {
-  const token = localStorage.getItem('auth_token');
+  const token = localStorage.getItem('auth_token')?.trim();
 
   // Si no existe token activo en localStorage, redirigir inmediatamente a /login
   if (!token) {
@@ -69,8 +65,14 @@ function ProtectedRoute() {
 
 // Guard de ruta exclusivo para el CEO (Super Admin)
 function CeoRoute({ children }) {
-  const userRole = localStorage.getItem('user_role') || 'Super Admin';
-  const isSuperAdmin = userRole === 'Super Admin' || userRole === 'CEO / Gerente';
+  let userRoles = [];
+  try {
+    const user = JSON.parse(localStorage.getItem('user') || 'null');
+    userRoles = Array.isArray(user?.roles) ? user.roles.map((role) => role.name) : [];
+  } catch {
+    userRoles = [];
+  }
+  const isSuperAdmin = userRoles.includes('Super Admin');
 
   if (!isSuperAdmin) {
     return <Navigate to="/dashboard" replace />;

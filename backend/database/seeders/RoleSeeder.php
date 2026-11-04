@@ -5,63 +5,37 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use RuntimeException;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
 
 class RoleSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
-        // Limpiar caché de roles y permisos
         app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
-        // 1. Asegurar la existencia de los 4 roles oficiales del sistema
-        $superAdminRole = Role::firstOrCreate(['name' => 'Super Admin', 'guard_name' => 'web']);
-        $adminRole      = Role::firstOrCreate(['name' => 'Administrador', 'guard_name' => 'web']);
-        $asesorRole     = Role::firstOrCreate(['name' => 'Asesor Comercial', 'guard_name' => 'web']);
-        $topoRole       = Role::firstOrCreate(['name' => 'Topógrafo', 'guard_name' => 'web']);
+        foreach (['Super Admin', 'Administrador', 'Asesor Comercial', 'Topógrafo'] as $roleName) {
+            Role::firstOrCreate([
+                'name' => $roleName,
+                'guard_name' => 'web',
+            ]);
+        }
 
-        // 2. Asignar rol 'Super Admin' al usuario principal (CEO / Gerente)
-        $superAdminUser = User::updateOrCreate(
-            ['email' => 'admin@vendeymas.com'],
-            [
-                'name' => 'Roberto Andrade - CEO / Gerente',
-                'phone' => '0989996421',
-                'password' => Hash::make('admin123'),
-            ]
-        );
-        $superAdminUser->syncRoles([$superAdminRole]);
+        $superAdminRole = Role::where('name', 'Super Admin')->where('guard_name', 'web')->firstOrFail();
+        $ceo = User::firstOrNew(['email' => 'ceo@vendeymas.com']);
 
-        // 3. Crear los 2 usuarios con rol 'Administrador'
-        $admin1 = User::updateOrCreate(
-            ['email' => 'administrador1@vendeymas.com'],
-            [
-                'name' => 'Lic. Valeria Gómez - Administradora',
-                'password' => Hash::make('admin123'),
-            ]
-        );
-        $admin1->syncRoles([$adminRole]);
+        if (! $ceo->exists) {
+            $password = config('seed.ceo_password');
+            if (! is_string($password) || $password === '') {
+                throw new RuntimeException('Define SEED_CEO_PASSWORD antes de crear la cuenta inicial.');
+            }
 
-        $admin2 = User::updateOrCreate(
-            ['email' => 'administrador2@vendeymas.com'],
-            [
-                'name' => 'Abg. Mateo Silva - Administrador',
-                'password' => Hash::make('admin123'),
-            ]
-        );
-        $admin2->syncRoles([$adminRole]);
+            $ceo->name = 'Nicky Mingo';
+            $ceo->password = Hash::make($password);
+            $ceo->save();
+        }
 
-        // 4. Crear 1 usuario con rol 'Topógrafo'
-        $topografo = User::updateOrCreate(
-            ['email' => 'topografo@vendeymas.com'],
-            [
-                'name' => 'Ing. Fernando Castro - Topógrafo',
-                'password' => Hash::make('topo123'),
-            ]
-        );
-        $topografo->syncRoles([$topoRole]);
+        $ceo->syncRoles([$superAdminRole]);
     }
 }

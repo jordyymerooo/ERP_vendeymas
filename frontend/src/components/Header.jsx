@@ -29,6 +29,9 @@ export default function Header({ onToggleSidebar }) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const initialNotificationsRequested = useRef(false);
+  const initialUserRequested = useRef(false);
+  const initialSignatureRequested = useRef(false);
 
   // Estados para Modal Híbrido de Firma Digital
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
@@ -135,7 +138,10 @@ export default function Header({ onToggleSidebar }) {
 
   useEffect(() => {
     // 1. Carga inicial al iniciar sesión / montar
-    fetchNotificationsSummary();
+    if (!initialNotificationsRequested.current) {
+      initialNotificationsRequested.current = true;
+      fetchNotificationsSummary();
+    }
 
     // 2. Disparos controlados por eventos globales específicos
     const handleUpdate = () => fetchNotificationsSummary();
@@ -153,7 +159,7 @@ export default function Header({ onToggleSidebar }) {
       window.removeEventListener('notifications-updated', handleUpdate);
       window.removeEventListener('tasks-count-updated', handleTasksCountUpdated);
     };
-  }, [currentRole]);
+  }, []);
 
   // Consultar datos actualizados del usuario autenticado (incluyendo firma digital)
   const fetchUserData = async () => {
@@ -172,6 +178,8 @@ export default function Header({ onToggleSidebar }) {
   };
 
   useEffect(() => {
+    if (initialUserRequested.current) return;
+    initialUserRequested.current = true;
     fetchUserData();
   }, []);
 
@@ -312,8 +320,10 @@ export default function Header({ onToggleSidebar }) {
   };
 
   useEffect(() => {
+    if (initialSignatureRequested.current) return;
+    initialSignatureRequested.current = true;
     fetchSignatureProfile();
-  }, [currentRole]);
+  }, []);
 
   const handleLogout = async () => {
     if (isLoggingOut) return;

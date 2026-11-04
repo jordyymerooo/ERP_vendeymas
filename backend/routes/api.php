@@ -92,8 +92,6 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
         // Auditoría, Respaldo y Mantenimiento del Sistema
         Route::get('/audit-logs', [AuditLogController::class, 'index']);
         Route::get('/system/backup', [SystemBackupController::class, 'downloadBackup']);
-        Route::post('/system/simulate', [\App\Http\Controllers\Api\SystemMaintenanceController::class, 'simulate']);
-        Route::post('/system/reset', [\App\Http\Controllers\Api\SystemMaintenanceController::class, 'reset']);
 
         // Control y Emisión de Cheques (Exclusivo CEO / Super Admin)
         Route::get('/cheques', [ChequeController::class, 'index']);

@@ -10,44 +10,30 @@ import {
   Receipt,
   ShieldCheck,
   UserCheck,
-  Building2,
   Scale,
   CheckSquare,
-  RefreshCw,
   Activity,
   X,
   AlertTriangle,
-  ChevronDown,
   Landmark,
 } from 'lucide-react';
 
-const SYSTEM_ROLES = [
-  {
-    id: 'Super Admin',
-    alias: 'CEO / Gerente',
-    desc: 'Ve todo, asigna proyectos y tareas a Administradores, supervisa 4 reciberas',
-  },
-  {
-    id: 'Administrador',
-    alias: 'Administrador',
-    desc: 'Ve solo proyectos asignados por CEO, 12 etapas de Escrituras, Tareas y ADM-',
-  },
-  {
-    id: 'Asesor Comercial',
-    alias: 'Asesor Comercial',
-    desc: 'Ve Proyectos, cartera en CRM, Clientes y Recibera ASE-',
-  },
-  {
-    id: 'Topógrafo',
-    alias: 'Topógrafo',
-    desc: 'Ve únicamente Topografía y Recibera Topográfica TOP-',
-  },
-];
+const getStoredUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('user') || 'null');
+  } catch {
+    return null;
+  }
+};
 
 export default function Sidebar({ isOpen, onClose }) {
-  const [userRole, setUserRole] = useState(() => {
-    return localStorage.getItem('user_role') || 'Super Admin';
-  });
+  const [currentUser, setCurrentUser] = useState(getStoredUser);
+  const userRoles = Array.isArray(currentUser?.roles) ? currentUser.roles.map((role) => role.name) : [];
+  const userRole = userRoles.includes('Super Admin')
+    ? 'Super Admin'
+    : userRoles[0] || currentUser?.role || 'Usuario';
+  const displayName = currentUser?.name || 'Usuario';
+  const avatarUrl = currentUser?.avatar_url || currentUser?.profile_photo_url || null;
   const [moraCount, setMoraCount] = useState(0);
   const [pendingTasksCount, setPendingTasksCount] = useState(() => {
     try {
@@ -57,11 +43,10 @@ export default function Sidebar({ isOpen, onClose }) {
       return 0;
     }
   });
-  const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
 
   useEffect(() => {
     const handleSync = () => {
-      setUserRole(localStorage.getItem('user_role') || 'Super Admin');
+      setCurrentUser(getStoredUser());
     };
     const handleTasksCountUpdated = (e) => {
       if (typeof e?.detail === 'number') {
@@ -107,43 +92,10 @@ export default function Sidebar({ isOpen, onClose }) {
     };
   }, []);
 
-  // Verificar de forma estricta si el usuario logueado real es Super Admin
-  const isRealSuperAdmin = (() => {
-    try {
-      const stored = localStorage.getItem('user');
-      if (!stored) return false;
-      const u = JSON.parse(stored);
-      if (u.id === 1) return true;
-      if (u.roles && Array.isArray(u.roles)) {
-        return u.roles.some((r) => r.name === 'Super Admin');
-      }
-      return u.role === 'Super Admin';
-    } catch (e) {
-      return false;
-    }
-  })();
-
   const isSuperAdmin = userRole === 'Super Admin' || userRole === 'CEO / Gerente';
   const isAdministrador = userRole === 'Administrador';
   const isAsesor = userRole === 'Asesor Comercial';
   const isTopografo = userRole === 'Topógrafo';
-
-  const displayRoleLabel = isSuperAdmin ? 'CEO / Gerente' : userRole;
-
-  const handleSelectRole = (nextRole) => {
-    setUserRole(nextRole);
-    localStorage.setItem('user_role', nextRole);
-    window.dispatchEvent(new Event('auth-change'));
-    setRoleDropdownOpen(false);
-  };
-
-  const handleCycleRole = () => {
-    const rolesList = ['Super Admin', 'Administrador', 'Asesor Comercial', 'Topógrafo'];
-    const currentNormalized = isSuperAdmin ? 'Super Admin' : userRole;
-    const currentIndex = rolesList.indexOf(currentNormalized);
-    const nextIndex = (currentIndex + 1) % rolesList.length;
-    handleSelectRole(rolesList[nextIndex]);
-  };
 
   // Construcción de la navegación adaptada por rol
   const getNavigationForRole = () => {
@@ -310,115 +262,21 @@ export default function Sidebar({ isOpen, onClose }) {
           </button>
         </div>
 
-        {/* Conmutador Rápido de Roles (Exclusivo Super Admin / CEO) */}
-        {isRealSuperAdmin ? (
-          <div className="px-3.5 pt-3 pb-2 relative">
-            <div className="bg-slate-800/80 border border-slate-700/80 rounded-md p-2 flex items-center justify-between">
-              <div
-                onClick={() => setRoleDropdownOpen(!roleDropdownOpen)}
-                className="flex items-center gap-2 min-w-0 cursor-pointer flex-1"
-                title="Haz clic para seleccionar rol"
-              >
-                {isSuperAdmin ? (
-                  <div className="w-6 h-6 rounded bg-slate-700 text-slate-200 flex items-center justify-center shrink-0">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                  </div>
-                ) : isAdministrador ? (
-                  <div className="w-6 h-6 rounded bg-indigo-900/60 text-indigo-300 flex items-center justify-center shrink-0">
-                    <Building2 className="w-3.5 h-3.5" />
-                  </div>
-                ) : isTopografo ? (
-                  <div className="w-6 h-6 rounded bg-cyan-900/60 text-cyan-300 flex items-center justify-center shrink-0">
-                    <Mountain className="w-3.5 h-3.5" />
-                  </div>
-                ) : (
-                  <div className="w-6 h-6 rounded bg-teal-900/60 text-teal-300 flex items-center justify-center shrink-0">
-                    <UserCheck className="w-3.5 h-3.5" />
-                  </div>
-                )}
-
-                <div className="min-w-0 flex-1">
-                  <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-black">
-                    PERFIL DE ACCESO
-                  </span>
-                  <span
-                    className={`text-xs font-black truncate block ${
-                      isSuperAdmin
-                        ? 'text-slate-100'
-                        : isAdministrador
-                        ? 'text-indigo-300'
-                        : isTopografo
-                        ? 'text-cyan-300'
-                        : 'text-teal-300'
-                    }`}
-                  >
-                    {displayRoleLabel}
-                  </span>
-                </div>
-
-                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${roleDropdownOpen ? 'rotate-180' : ''}`} />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleCycleRole}
-                title="Cambiar al siguiente rol en 1 clic"
-                className="p-1.5 ml-1 rounded text-slate-400 hover:text-white hover:bg-slate-700 transition cursor-pointer"
-              >
-                <RefreshCw className="w-3 h-3" />
-              </button>
-            </div>
-
-            {/* Menú Desplegable con los 4 Roles Oficiales */}
-            {roleDropdownOpen && (
-              <div className="absolute left-3.5 right-3.5 top-full mt-1 bg-slate-800 border border-slate-700 rounded-md shadow-2xl py-1 z-50 text-xs font-semibold max-h-72 overflow-y-auto">
-                <div className="px-3 py-1 text-[10px] text-slate-400 uppercase font-black border-b border-slate-700">
-                  Alternar Perfil de Acceso:
-                </div>
-                {SYSTEM_ROLES.map((r) => {
-                  const isSelected = (r.id === userRole) || (r.id === 'Super Admin' && isSuperAdmin);
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => handleSelectRole(r.id)}
-                      className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition cursor-pointer border-b border-slate-700/50 last:border-0 ${
-                        isSelected
-                          ? 'bg-slate-700/90 text-white font-bold'
-                          : 'text-slate-300 hover:bg-slate-700/40 hover:text-white'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-xs">{r.alias}</span>
-                        {isSelected && <span className="w-2 h-2 rounded-full bg-teal-400"></span>}
-                      </div>
-                      <span className="text-[10px] text-slate-400 font-normal leading-tight">
-                        {r.desc}
-                      </span>
-                    </button>
-                  );
-                })}
+        <div className="px-3.5 pt-3 pb-2">
+          <div className="bg-slate-800/60 border border-slate-700/70 rounded-md p-2.5 flex items-center gap-2.5">
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="" className="w-9 h-9 rounded-full object-cover shrink-0" />
+            ) : (
+              <div className="w-9 h-9 rounded-full bg-slate-700 text-teal-300 flex items-center justify-center shrink-0">
+                <UserCheck className="w-4 h-4" />
               </div>
             )}
-          </div>
-        ) : (
-          /* Para usuarios normales: Insignia de Rol Asignado Oficial (Sin selector ni simulación) */
-          <div className="px-3.5 pt-3 pb-2">
-            <div className="bg-slate-800/50 border border-slate-700/50 rounded-md p-2 flex items-center gap-2">
-              <div className="w-6 h-6 rounded bg-slate-700/70 text-teal-400 flex items-center justify-center shrink-0">
-                <UserCheck className="w-3.5 h-3.5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-black">
-                  ROL ASIGNADO
-                </span>
-                <span className="text-xs font-bold text-slate-200 truncate block">
-                  {displayRoleLabel}
-                </span>
-              </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-xs font-bold text-slate-100 truncate block">{displayName}</span>
+              <span className="text-[10px] text-slate-400 truncate block">{userRole}</span>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Menú de Navegación por Rol */}
         <nav className="flex-1 px-2.5 py-2 space-y-1 overflow-y-auto">

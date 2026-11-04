@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Lock, Mail, Eye, EyeOff, AlertCircle, ShieldCheck, UserCheck, ArrowRight, Loader2 } from 'lucide-react';
+import { Lock, Mail, Eye, EyeOff, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 import Logo from '../components/Logo';
 
 export default function Login() {
@@ -38,7 +38,7 @@ export default function Login() {
 
         // Determinar rol activo
         const userRoles = res.data.roles || [];
-        const activeRole = userRoles.includes('Super Admin') ? 'Super Admin' : (userRoles[0] || 'Asesor Comercial');
+        const activeRole = userRoles.includes('Super Admin') ? 'Super Admin' : (userRoles[0] || '');
         localStorage.setItem('user_role', activeRole);
 
         // Notificar a otras instancias si es necesario
@@ -58,13 +58,6 @@ export default function Login() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  // Función para rellenar credenciales rápidas de prueba
-  const handleQuickFill = (testEmail, testPass) => {
-    setEmail(testEmail);
-    setPassword(testPass);
-    setErrorMessage(null);
   };
 
   return (
@@ -188,37 +181,6 @@ export default function Login() {
             </div>
           </form>
 
-          {/* Accesos Rápidos de Prueba */}
-          <div className="mt-6 pt-5 border-t border-slate-100">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block text-center mb-2.5">
-              Acceso Rápido al Sistema
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickFill('admin@vendeymas.com', 'admin123')}
-                className="p-2.5 rounded-md bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 text-left transition cursor-pointer flex flex-col"
-              >
-                <div className="flex items-center gap-1.5 text-xs font-semibold">
-                  <ShieldCheck className="w-3.5 h-3.5 text-slate-700" />
-                  <span>Super Admin</span>
-                </div>
-                <span className="text-[10px] text-slate-500 font-mono mt-0.5">admin@vendeymas.com</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('carlos@vendeymas.com', 'asesor123')}
-                className="p-2.5 rounded-md bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 text-left transition cursor-pointer flex flex-col"
-              >
-                <div className="flex items-center gap-1.5 text-xs font-semibold">
-                  <UserCheck className="w-3.5 h-3.5 text-slate-700" />
-                  <span>Asesor Ventas</span>
-                </div>
-                <span className="text-[10px] text-slate-500 font-mono mt-0.5">carlos@vendeymas.com</span>
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Footer legal */}

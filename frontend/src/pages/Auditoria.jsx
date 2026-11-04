@@ -26,9 +26,6 @@ import {
   DatabaseBackup,
   Loader2,
   HardDriveDownload,
-  Sparkles,
-  Trash2,
-  AlertTriangle,
 } from 'lucide-react';
 
 export default function Auditoria() {
@@ -53,13 +50,6 @@ export default function Auditoria() {
   // Estados de Descarga de Respaldo de Base de Datos
   const [downloadingBackup, setDownloadingBackup] = useState(false);
   const [toastNotification, setToastNotification] = useState(null);
-
-  // Estados de Simulación y Formateo a Cero
-  const [simulatingData, setSimulatingData] = useState(false);
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetConfirmText, setResetConfirmText] = useState('');
-  const [resetWithBase, setResetWithBase] = useState(true);
-  const [resetSubmitting, setResetSubmitting] = useState(false);
 
   // Módulos disponibles para filtrar
   const modules = ['TODOS', 'Autenticación', 'Cobros', 'Clientes', 'Usuarios'];
@@ -267,69 +257,6 @@ export default function Auditoria() {
     }
   };
 
-  // Manejador para Simulación Operativa Masiva (100 Clientes)
-  const handleSimulateData = async () => {
-    if (
-      !window.confirm(
-        '¿Deseas generar la simulación completa con 100 clientes, 120 lotes, 6 proyectos y ~250 recibos?\n\nEsta acción reiniciará y cargará los datos de demostración.'
-      )
-    ) {
-      return;
-    }
-    setSimulatingData(true);
-    setToastNotification(null);
-    try {
-      const res = await axios.post('/api/system/simulate');
-      setToastNotification({
-        type: 'success',
-        message: res.data.message || '¡Simulación masiva de 100 clientes generada con éxito!',
-      });
-      fetchLogs(1, selectedModule, searchTerm);
-    } catch (err) {
-      console.error('Error al ejecutar simulación masiva:', err);
-      setToastNotification({
-        type: 'error',
-        message: err.response?.data?.message || 'Error al ejecutar la simulación del sistema.',
-      });
-    } finally {
-      setSimulatingData(false);
-      setTimeout(() => setToastNotification(null), 7000);
-    }
-  };
-
-  // Manejador para Formatear Sistema a Cero (Producción)
-  const handleResetSubmit = async (e) => {
-    e.preventDefault();
-    if (resetConfirmText.trim() !== 'CONFIRMAR') {
-      alert('Debes escribir CONFIRMAR en mayúsculas para proceder.');
-      return;
-    }
-    setResetSubmitting(true);
-    setToastNotification(null);
-    try {
-      const res = await axios.post('/api/system/reset', {
-        confirm: 'CONFIRMAR',
-        base: resetWithBase,
-      });
-      setResetModalOpen(false);
-      setResetConfirmText('');
-      setToastNotification({
-        type: 'success',
-        message: res.data.message || 'Sistema formateado a cero con éxito para producción.',
-      });
-      fetchLogs(1, selectedModule, searchTerm);
-    } catch (err) {
-      console.error('Error al reiniciar el sistema:', err);
-      setToastNotification({
-        type: 'error',
-        message: err.response?.data?.message || 'Error al ejecutar el formateo del sistema.',
-      });
-    } finally {
-      setResetSubmitting(false);
-      setTimeout(() => setToastNotification(null), 7000);
-    }
-  };
-
   return (
     <div className="space-y-6 animate-fade-in w-full pb-8">
       {/* Toast Notification */}
@@ -378,46 +305,10 @@ export default function Auditoria() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Botones Exclusivos para Super Admin */}
-          {isSuperAdmin && (
-            <>
-              {/* Botón 1: Simulación Demo 100 Clientes */}
-              <button
-                type="button"
-                onClick={handleSimulateData}
-                disabled={simulatingData || resetSubmitting || downloadingBackup}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md font-bold text-white bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition text-xs shrink-0 cursor-pointer shadow-xs disabled:opacity-50"
-                title="Cargar simulación de volumen real con 100 clientes, 120 lotes y 250 recibos"
-              >
-                {simulatingData ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                ) : (
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-200" />
-                )}
-                <span>{simulatingData ? 'Simulando Datos...' : 'Cargar Simulación Demo (100 Clientes)'}</span>
-              </button>
-
-              {/* Botón 2: Formatear Sistema a Cero (Producción) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setResetConfirmText('');
-                  setResetModalOpen(true);
-                }}
-                disabled={simulatingData || resetSubmitting || downloadingBackup}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md font-bold text-white bg-rose-600 hover:bg-rose-500 active:bg-rose-700 transition text-xs shrink-0 cursor-pointer shadow-xs disabled:opacity-50"
-                title="Borrar todos los datos y dejar el sistema en cero para producción"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-200" />
-                <span>Formatear Sistema a Cero (Producción)</span>
-              </button>
-            </>
-          )}
-
           <button
             type="button"
             onClick={handleDownloadBackup}
-            disabled={downloadingBackup || simulatingData || resetSubmitting}
+            disabled={downloadingBackup}
             className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md font-bold text-white bg-slate-900 hover:bg-slate-800 active:bg-black transition text-xs shrink-0 cursor-pointer shadow-xs disabled:opacity-50"
             title="Descargar volcado completo SQL (.sql) de la base de datos PostgreSQL"
           >
@@ -832,142 +723,6 @@ export default function Auditoria() {
         </div>
       )}
 
-      {/* ================= MODAL: FORMATEAR SISTEMA A CERO (PRODUCCIÓN) ================= */}
-      {resetModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden border border-rose-200 animate-fade-in">
-            {/* Cabecera */}
-            <div className="p-5 bg-rose-600 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-white/20 flex items-center justify-center text-white shrink-0">
-                  <AlertTriangle className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base leading-tight">
-                    Formatear Sistema a Cero (Producción)
-                  </h3>
-                  <p className="text-xs text-rose-100 mt-0.5">
-                    Acción irreversible de reinicio total de base de datos
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => !resetSubmitting && setResetModalOpen(false)}
-                disabled={resetSubmitting}
-                className="p-1 rounded-md text-white/80 hover:text-white hover:bg-white/10 transition cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Contenido / Formulario */}
-            <form onSubmit={handleResetSubmit} className="p-6 space-y-4">
-              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-xs text-rose-900 space-y-2">
-                <p className="font-bold flex items-center gap-1.5 text-rose-800">
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                  ¡ADVERTENCIA CRÍTICA DE PRODUCCIÓN!
-                </p>
-                <p>
-                  Esta operación ejecutará un <span className="font-mono font-bold">TRUNCATE ... RESTART IDENTITY CASCADE</span> en PostgreSQL, eliminando permanentemente todos los clientes, ventas, lotes, recibos, prospectos y bitácoras forenses. Todos los correlativos de recibos volverán a iniciar en <strong>1</strong>.
-                </p>
-                <p>
-                  Únicamente se mantendrá el usuario <strong>Super Admin (admin@vendeymas.com)</strong>.
-                </p>
-              </div>
-
-              {/* Selector de modo */}
-              <div className="space-y-2 pt-1">
-                <label className="block text-xs font-bold text-slate-700">
-                  Modo de Reinicio:
-                </label>
-                <div className="space-y-2">
-                  <label className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition">
-                    <input
-                      type="radio"
-                      name="resetMode"
-                      checked={resetWithBase}
-                      onChange={() => setResetWithBase(true)}
-                      className="mt-0.5 text-rose-600 focus:ring-rose-500"
-                    />
-                    <div>
-                      <span className="text-xs font-bold text-slate-900 block">
-                        Modo Estructura Base (--base) (Recomendado)
-                      </span>
-                      <span className="text-[11px] text-slate-500 block mt-0.5">
-                        Limpia todas las ventas y clientes, pero conserva los 3 proyectos iniciales vacíos (Bosque Urbano, Guapuca, Valle Verde) y las 3 cuentas de asesores.
-                      </span>
-                    </div>
-                  </label>
-
-                  <label className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition">
-                    <input
-                      type="radio"
-                      name="resetMode"
-                      checked={!resetWithBase}
-                      onChange={() => setResetWithBase(false)}
-                      className="mt-0.5 text-rose-600 focus:ring-rose-500"
-                    />
-                    <div>
-                      <span className="text-xs font-bold text-slate-900 block">
-                        Modo Cero Absoluto (Purga Total)
-                      </span>
-                      <span className="text-[11px] text-slate-500 block mt-0.5">
-                        Elimina absolutamente todos los proyectos y asesores. El sistema queda 100% en blanco listo para crear proyectos desde cero.
-                      </span>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Confirmación obligatoria por texto */}
-              <div className="space-y-1.5 pt-2">
-                <label className="block text-xs font-semibold text-slate-800">
-                  Escribe <span className="font-mono font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">CONFIRMAR</span> para autorizar el formateo:
-                </label>
-                <input
-                  type="text"
-                  value={resetConfirmText}
-                  onChange={(e) => setResetConfirmText(e.target.value)}
-                  placeholder="Escribe CONFIRMAR"
-                  disabled={resetSubmitting}
-                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500 transition"
-                  required
-                />
-              </div>
-
-              {/* Acciones */}
-              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setResetModalOpen(false)}
-                  disabled={resetSubmitting}
-                  className="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 transition cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={resetConfirmText.trim() !== 'CONFIRMAR' || resetSubmitting}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
-                >
-                  {resetSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin text-white" />
-                      <span>Formateando Sistema...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="w-4 h-4 text-white" />
-                      <span>Confirmar y Formatear a Cero</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
