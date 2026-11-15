@@ -7,12 +7,12 @@ WORKDIR /var/www/html
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fonts-dejavu-core gosu libfcgi-bin postgresql-client-17 tzdata \
-        libfreetype6 libjpeg62-turbo libpng16-16t64 libpq5 libwebp7 libzip5 \
-        libfreetype-dev libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev libzip-dev \
+        libfreetype6 libicu76 libjpeg62-turbo libpng16-16t64 libpq5 libwebp7 libzip5 \
+        libfreetype-dev libicu-dev libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
-    && docker-php-ext-install -j"$(nproc)" gd opcache pcntl pdo_pgsql zip \
+    && docker-php-ext-install -j"$(nproc)" gd intl opcache pcntl pdo_pgsql zip \
     && apt-get purge -y --auto-remove \
-        libfreetype-dev libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev libzip-dev \
+        libfreetype-dev libicu-dev libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev libzip-dev \
     && rm -rf /var/lib/apt/lists/* \
     && cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
