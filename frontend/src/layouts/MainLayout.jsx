@@ -13,7 +13,7 @@ export default function MainLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-800 overflow-hidden font-sans">
+    <div className="flex h-dvh bg-slate-50 text-slate-800 overflow-hidden font-sans">
       {/* Sidebar fijo en escritorio / Cajón deslizable en móvil */}
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
@@ -22,8 +22,8 @@ export default function MainLayout() {
         <Header onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
 
         {/* Área de trabajo con scroll y márgenes uniformes ejecutivos */}
-        <main className="flex-1 overflow-y-auto">
-          <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          <div className="w-full min-w-0 max-w-[1600px] mx-auto px-3 sm:px-6 lg:px-8 py-6">
             <Outlet />
           </div>
         </main>

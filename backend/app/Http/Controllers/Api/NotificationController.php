@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AppNotification;
 use App\Models\AdminTask;
-use App\Models\Lot;
+use App\Services\DelinquentLots;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -157,22 +157,6 @@ class NotificationController extends Controller
      */
     protected function calculateTotalMoraCount(): int
     {
-        return Cache::remember('system_mora_count', 600, function () {
-            $soldLots = Lot::with(['payments:id,lot_id,amount_paid,status'])
-                ->where('status', 'Vendido')
-                ->whereNotNull('customer_id')
-                ->select('id', 'status', 'customer_id', 'total_price', 'installments_count', 'payment_day', 'sale_date', 'created_at')
-                ->get();
-
-            $count = 0;
-            foreach ($soldLots as $lot) {
-                $moraInfo = $lot->calculateMoraStatus();
-                if (($moraInfo['status'] ?? '') === 'EN MORA') {
-                    $count++;
-                }
-            }
-
-            return $count;
-        });
+        return Cache::remember('system_mora_count', 600, fn () => app(DelinquentLots::class)->query()->count());
     }
 }

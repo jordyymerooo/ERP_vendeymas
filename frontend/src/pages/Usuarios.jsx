@@ -1,5 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import ResetUserPasswordDialog from '../components/ResetUserPasswordDialog';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import {
   ShieldCheck,
   Users,
@@ -31,7 +36,12 @@ const ROLES = [
 ];
 
 export default function Usuarios() {
+  const { user: currentUser, updateUser } = useAuth();
   const [users, setUsers] = useState([]);
+  const [pagination, setPagination] = useState({});
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
+  const [roleCounts, setRoleCounts] = useState({});
   const [projectsList, setProjectsList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -39,6 +49,7 @@ export default function Usuarios() {
 
   // Estados del modal
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [resetUser, setResetUser] = useState(null);
   const [editingUser, setEditingUser] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
@@ -59,28 +70,43 @@ export default function Usuarios() {
   const [isSavingUserProjects, setIsSavingUserProjects] = useState(false);
 
   // Cargar usuarios y proyectos
-  const fetchUsers = async () => {
+  const fetchUsers = async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
-      const [usersRes, projRes] = await Promise.all([
-        axios.get('/api/users'),
-        axios.get('/api/projects'),
-      ]);
-      setUsers(usersRes.data?.data || []);
-      setProjectsList(Array.isArray(projRes.data) ? projRes.data : (projRes.data?.data || []));
+      const { data } = await axios.get('/api/users', {
+        params: { page, per_page: perPage, search: searchTerm.trim(), role: roleFilter },
+      });
+      if (requestId !== listRequest.current) return;
+      if (page > data.last_page) {
+        await fetchUsers(data.last_page);
+        return;
+      }
+      setUsers(data.data);
+      setPagination(data);
+      setRoleCounts(data.role_counts);
     } catch (err) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al cargar datos:', err);
       setToastMessage({
         type: 'error',
         text: 'Error al conectar con el servicio de usuarios.',
       });
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchUsers();
+    listRequest.current++;
+    const timer = setTimeout(() => fetchUsers(), 250);
+    return () => clearTimeout(timer);
+  }, [searchTerm, roleFilter, perPage]);
+
+  useEffect(() => {
+    axios.get('/api/projects')
+      .then(({ data }) => setProjectsList(Array.isArray(data) ? data : data.data || []))
+      .catch((error) => console.error('Error al cargar proyectos:', error));
   }, []);
 
   const handleInputChange = (e) => {
@@ -123,7 +149,7 @@ export default function Usuarios() {
     setFormData({
       name: user.name || '',
       email: user.email || '',
-      phone: user.phone || '0989996421',
+      phone: user.phone ?? '',
       password: '',
       role: userRole,
       project_ids: assignedIds,
@@ -143,8 +169,7 @@ export default function Usuarios() {
     );
   };
 
-  const handleSaveUserProjects = async (e) => {
-    e.preventDefault();
+  const [handleSaveUserProjects, handleSaveUserProjectsPending] = useSingleSubmit(async (e) => {
     if (!assignProjectsModalUser) return;
     setIsSavingUserProjects(true);
     try {
@@ -156,8 +181,9 @@ export default function Usuarios() {
         text: `Proyectos asignados exitosamente al administrador "${assignProjectsModalUser.name}".`,
       });
       setAssignProjectsModalUser(null);
-      fetchUsers();
+      fetchUsers(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al asignar proyectos:', err);
       setToastMessage({
         type: 'error',
@@ -167,11 +193,10 @@ export default function Usuarios() {
       setIsSavingUserProjects(false);
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
+  }, { form: true });
 
   // Guardar (crear o actualizar)
-  const handleGuardarUsuario = async (e) => {
-    e.preventDefault();
+  const [handleGuardarUsuario, handleGuardarUsuarioPending] = useSingleSubmit(async (e) => {
     if (!formData.name.trim() || !formData.email.trim() || !formData.role) return;
 
     if (!editingUser && (!formData.password || formData.password.length < 6)) {
@@ -184,16 +209,20 @@ export default function Usuarios() {
       const payload = {
         name: formData.name.trim(),
         email: formData.email.trim(),
-        phone: formData.phone?.trim() || '0989996421',
+        phone: formData.phone.trim() || (editingUser ? null : '0989996421'),
         role: formData.role,
         project_ids: formData.role === 'Administrador' ? formData.project_ids : [],
       };
 
       if (editingUser) {
-        if (formData.password.trim()) {
-          payload.password = formData.password.trim();
+        if (formData.password) {
+          payload.password = formData.password;
         }
-        await axios.put(`/api/users/${editingUser.id}`, payload);
+        const { data } = await axios.put(`/api/users/${editingUser.id}`, payload);
+        if (editingUser.id === currentUser?.id) {
+          localStorage.setItem('user_role', data.data.roles[0].name);
+          updateUser(data.data);
+        }
         setToastMessage({
           type: 'success',
           text: `Usuario "${formData.name}" actualizado con éxito.`,
@@ -210,8 +239,9 @@ export default function Usuarios() {
       setIsModalOpen(false);
       setEditingUser(null);
       setFormData({ name: '', email: '', phone: '0989996421', password: '', role: 'Asesor Comercial', project_ids: [] });
-      fetchUsers();
+      fetchUsers(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al guardar usuario:', err);
       const msg = err.response?.data?.message || 'Error al procesar la solicitud de usuario.';
       setToastMessage({
@@ -222,10 +252,10 @@ export default function Usuarios() {
       setIsSubmitting(false);
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
+  }, { form: true });
 
   // Eliminar usuario
-  const handleEliminarUsuario = async (user) => {
+  const [handleEliminarUsuario, handleEliminarUsuarioPending] = useSingleSubmit(async (user) => {
     if (user.id === 1) {
       alert('Por seguridad no es posible eliminar al Administrador Principal del sistema.');
       return;
@@ -242,8 +272,9 @@ export default function Usuarios() {
         type: 'success',
         text: res.data?.message || `Usuario "${user.name}" eliminado con éxito.`,
       });
-      fetchUsers();
+      fetchUsers(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al eliminar usuario:', err);
       const msg = err.response?.data?.message || 'Error al eliminar el usuario.';
       setToastMessage({
@@ -253,22 +284,13 @@ export default function Usuarios() {
     } finally {
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
-
-  // Filtrado de usuarios
-  const filteredUsers = users.filter((u) => {
-    const roleName = u.roles && u.roles.length > 0 ? u.roles[0].name : 'Sin Rol';
-    if (roleFilter !== 'TODOS' && roleName !== roleFilter) return false;
-
-    if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
-    return u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term);
   });
 
-  const superAdminsCount = users.filter((u) => u.roles?.some((r) => r.name === 'Super Admin')).length;
-  const administradoresCount = users.filter((u) => u.roles?.some((r) => r.name === 'Administrador')).length;
-  const asesoresCount = users.filter((u) => u.roles?.some((r) => r.name === 'Asesor Comercial')).length;
-  const topografosCount = users.filter((u) => u.roles?.some((r) => r.name === 'Topógrafo')).length;
+  // Filtrado de usuarios
+  const superAdminsCount = roleCounts['Super Admin'] || 0;
+  const administradoresCount = roleCounts.Administrador || 0;
+  const asesoresCount = roleCounts['Asesor Comercial'] || 0;
+  const topografosCount = roleCounts['Topógrafo'] || 0;
 
   return (
     <div className="space-y-6 animate-fade-in w-full pb-8 font-sans">
@@ -383,7 +405,7 @@ export default function Usuarios() {
       <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
         <div className="relative w-full sm:w-80">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <input id="usuarios-search" name="usuarios_search"
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -434,7 +456,7 @@ export default function Usuarios() {
                     <p className="text-xs font-semibold">Cargando colaboradores...</p>
                   </td>
                 </tr>
-              ) : filteredUsers.length === 0 ? (
+              ) : users.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-slate-400">
                     <Users className="w-8 h-8 mx-auto text-slate-300 mb-2" />
@@ -442,11 +464,14 @@ export default function Usuarios() {
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((user) => {
+                users.map((user) => {
                   const roleName = user.roles?.[0]?.name || 'Asesor Comercial';
                   const isUserSuperAdmin = roleName === 'Super Admin';
                   const isUserAdmin = roleName === 'Administrador';
                   const isUserTopo = roleName === 'Topógrafo';
+                  const canResetPassword = user.id !== 1
+                    && !user.roles?.some((role) => role.name === 'Super Admin')
+                    && user.roles?.some((role) => ['Administrador', 'Asesor Comercial', 'Topógrafo'].includes(role.name));
                   const assignedProjects = user.assigned_projects || [];
 
                   return (
@@ -454,6 +479,11 @@ export default function Usuarios() {
                       <td className="py-3 px-4">
                         <div className="font-bold text-slate-900 flex items-center gap-1.5">
                           <span>{user.name}</span>
+                          {user.password_reset_requested && (
+                            <span className="rounded border border-rose-200 bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800">
+                              Solicitó cambio de clave
+                            </span>
+                          )}
                           {user.id === 1 && (
                             <span className="text-[9px] bg-amber-100 text-amber-800 font-extrabold px-1.5 py-0.2 rounded border border-amber-200">
                               CEO
@@ -474,7 +504,7 @@ export default function Usuarios() {
                       <td className="py-3 px-4 text-slate-700 font-mono text-[11px]">
                         <div className="flex items-center gap-1.5">
                           <Phone className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>{user.phone || '0989996421'}</span>
+                          <span>{user.phone || 'Sin teléfono'}</span>
                         </div>
                       </td>
 
@@ -554,15 +584,26 @@ export default function Usuarios() {
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
 
-                          {user.id !== 1 && (
+                          {canResetPassword && (
                             <button
+                              type="button"
+                              title="Regenerar Clave"
+                              aria-label={`Regenerar Clave de ${user.name}`}
+                              onClick={() => setResetUser(user)}
+                              className="rounded-md p-1.5 text-amber-700 transition hover:bg-amber-50"
+                            >
+                              <KeyRound className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          {user.id !== 1 && (
+                            <ActionButton loading={handleEliminarUsuarioPending}
                               type="button"
                               title="Eliminar Usuario"
                               onClick={() => handleEliminarUsuario(user)}
                               className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            </ActionButton>
                           )}
                         </div>
                       </td>
@@ -573,7 +614,16 @@ export default function Usuarios() {
             </tbody>
           </table>
         </div>
+        <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchUsers} onPerPageChange={setPerPage} loading={loading} />
       </div>
+
+      {resetUser && (
+        <ResetUserPasswordDialog
+          user={resetUser}
+          onClose={() => setResetUser(null)}
+          onSaved={() => fetchUsers(pagination.current_page)}
+        />
+      )}
 
       {/* ================= MODAL: REGISTRAR / EDITAR USUARIO ================= */}
       {isModalOpen && (
@@ -598,8 +648,8 @@ export default function Usuarios() {
 
             <form onSubmit={handleGuardarUsuario} className="space-y-3.5">
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Nombre Completo *</label>
-                <input
+                <label htmlFor="usuarios-name" className="block font-bold text-slate-700 mb-1">Nombre Completo *</label>
+                <input id="usuarios-name"
                   type="text"
                   name="name"
                   required
@@ -611,11 +661,12 @@ export default function Usuarios() {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Correo Electrónico *</label>
-                <input
+                <label htmlFor="usuarios-email" className="block font-bold text-slate-700 mb-1">Correo Electrónico *</label>
+                <input id="usuarios-email"
                   type="email"
                   name="email"
                   required
+                  maxLength={editingUser ? 150 : 255}
                   value={formData.email}
                   onChange={handleInputChange}
                   placeholder="Ej. admin_area1@vendeymas.com"
@@ -625,13 +676,14 @@ export default function Usuarios() {
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block font-bold text-slate-700">Celular / WhatsApp Oficial (Ecuador) *</label>
+                  <label className="block font-bold text-slate-700">Celular / WhatsApp Oficial (Ecuador){editingUser ? '' : ' *'}</label>
                   <span className="text-[10px] text-slate-400 font-mono">10 dígitos (Ej: 0989996421)</span>
                 </div>
-                <input
+                <input id="usuarios-phone"
                   type="tel"
                   name="phone"
-                  required
+                  required={!editingUser}
+                  maxLength={editingUser ? 25 : 20}
                   value={formData.phone}
                   onChange={handleInputChange}
                   placeholder="0989996421"
@@ -643,12 +695,13 @@ export default function Usuarios() {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">
+                <label htmlFor="usuarios-password" className="block font-bold text-slate-700 mb-1">
                   {editingUser ? 'Nueva Contraseña (Opcional)' : 'Contraseña de Acceso *'}
                 </label>
-                <input
+                <input id="usuarios-password"
                   type="password"
                   name="password"
+                  autoComplete="new-password"
                   required={!editingUser}
                   minLength={6}
                   value={formData.password}
@@ -660,8 +713,8 @@ export default function Usuarios() {
 
               {/* Selector de Rol Oficial */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Rol y Nivel de Acceso *</label>
-                <select
+                <label htmlFor="usuarios-official-role" className="block font-bold text-slate-700 mb-1">Rol y Nivel de Acceso *</label>
+                <select id="usuarios-official-role"
                   name="role"
                   value={formData.role}
                   onChange={handleInputChange}
@@ -704,7 +757,7 @@ export default function Usuarios() {
                               : 'bg-white/70 border-slate-200 text-slate-600 hover:bg-white'
                           }`}
                         >
-                          <input
+                          <input id={`usuarios-editor-project-${p.id}`} name={`usuarios_editor_project_${p.id}`}
                             type="checkbox"
                             checked={isChecked}
                             onChange={() => handleToggleProject(p.id)}
@@ -726,14 +779,14 @@ export default function Usuarios() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleGuardarUsuarioPending}
                   type="submit"
                   disabled={isSubmitting}
                   className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-md flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{editingUser ? 'Actualizar Usuario' : 'Crear Usuario'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -785,7 +838,7 @@ export default function Usuarios() {
                             : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100/60'
                         }`}
                       >
-                        <input
+                        <input id={`usuarios-assignment-project-${proj.id}`} name={`usuarios_assignment_project_${proj.id}`}
                           type="checkbox"
                           checked={isChecked}
                           onChange={() => handleToggleUserProjectCheck(proj.id)}
@@ -813,14 +866,14 @@ export default function Usuarios() {
                   >
                     Cancelar
                   </button>
-                  <button
+                  <ActionButton loading={handleSaveUserProjectsPending}
                     type="submit"
                     disabled={isSavingUserProjects}
                     className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition cursor-pointer disabled:opacity-50"
                   >
                     {isSavingUserProjects && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                     <span>{isSavingUserProjects ? 'Guardando...' : 'Guardar Asignación'}</span>
-                  </button>
+                  </ActionButton>
                 </div>
               </div>
             </form>

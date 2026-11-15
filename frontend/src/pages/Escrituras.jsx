@@ -1,7 +1,11 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import { receiptPdfUrl } from '../utils/receiptPdfUrl';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
-import SignatureCanvas from 'react-signature-canvas';
+import SignaturePadField from '../components/SignaturePadField';
+import EmitterSignaturePreview from '../components/EmitterSignaturePreview';
 import {
   FileText,
   Search,
@@ -25,7 +29,6 @@ import {
   Layers,
   ChevronRight,
   ShieldCheck,
-  RotateCcw,
   Sparkles,
   MapPin,
   ExternalLink,
@@ -404,8 +407,8 @@ export default function Escrituras({ openNewModal = false }) {
     try {
       const [projRes, usersRes, custRes] = await Promise.all([
         axios.get('/api/projects'),
-        axios.get('/api/users'),
-        axios.get('/api/customers'),
+        axios.get('/api/users/options'),
+        axios.get('/api/customers/options'),
       ]);
       setProjectsList(Array.isArray(projRes.data) ? projRes.data : (projRes.data?.data || []));
 
@@ -448,8 +451,7 @@ export default function Escrituras({ openNewModal = false }) {
   };
 
   // Registrar nuevo expediente
-  const handleCreateDeed = async (e) => {
-    e.preventDefault();
+  const [handleCreateDeed, handleCreateDeedPending] = useSingleSubmit(async (e) => {
     if (!newDeed.customer_id || !newDeed.project_id) {
       alert('Por favor selecciona cliente y proyecto.');
       return;
@@ -474,12 +476,13 @@ export default function Escrituras({ openNewModal = false }) {
       handleCloseCreateModal();
       fetchDeeds();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar escritura:', err);
       alert(err.response?.data?.message || 'Error al crear el trámite.');
     } finally {
       setSubmitting(false);
     }
-  };
+  }, { form: true });
 
   // Abrir modal de edición rápida de nota de situación
   const handleOpenEditNote = (deed) => {
@@ -489,8 +492,7 @@ export default function Escrituras({ openNewModal = false }) {
   };
 
   // Guardar nota de situación vía PUT /api/deeds/{id}
-  const handleSaveNote = async (e) => {
-    e.preventDefault();
+  const [handleSaveNote, handleSaveNotePending] = useSingleSubmit(async (e) => {
     if (!selectedDeedForNote) return;
     setUpdatingNote(true);
     try {
@@ -504,15 +506,16 @@ export default function Escrituras({ openNewModal = false }) {
       setEditNoteModalOpen(false);
       setSelectedDeedForNote(null);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al actualizar nota de situación:', err);
       alert(err.response?.data?.message || 'Error al guardar la nota.');
     } finally {
       setUpdatingNote(false);
     }
-  };
+  }, { form: true });
 
   // Cambiar etapa directamente
-  const handleUpdateStage = async (deedId, newStage) => {
+  const [handleUpdateStage, handleUpdateStagePending] = useSingleSubmit(async (deedId, newStage) => {
     try {
       await axios.put(`/api/deeds/${deedId}/stage`, { stage: newStage });
       showToast(`Escritura avanzada a etapa "${newStage}".`);
@@ -521,14 +524,14 @@ export default function Escrituras({ openNewModal = false }) {
       );
       fetchDeeds();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al cambiar etapa:', err);
       alert('No se pudo actualizar la etapa.');
     }
-  };
+  });
 
   // Registrar cobro municipal / administrativo
-  const handleProcessAdmPayment = async (e) => {
-    e.preventDefault();
+  const [handleProcessAdmPayment, handleProcessAdmPaymentPending] = useSingleSubmit(async (e) => {
     if (!selectedDeedForPayment) return;
     const amount = parseFloat(paymentForm.amount_paid);
     if (!amount || amount <= 0) {
@@ -558,7 +561,7 @@ export default function Escrituras({ openNewModal = false }) {
         bank_reference: isBankMethod ? paymentForm.bank_reference.trim() : null,
         concept_detail: paymentForm.concept_detail,
         receipt_book: 'ADMINISTRACION',
-        signature_base64: firmaBase64,
+        customer_signature: firmaBase64,
       });
 
       const payment = res.data?.payment || res.data?.data;
@@ -573,6 +576,7 @@ export default function Escrituras({ openNewModal = false }) {
       } catch (e) {}
 
       const successData = {
+        deed: selectedDeedForPayment,
         paymentId: payment?.id,
         receiptCode: receiptCode,
         receiptBook: 'ADMINISTRACION',
@@ -606,14 +610,16 @@ export default function Escrituras({ openNewModal = false }) {
         window.open(`/api/payments/${payment.id}/pdf`, '_blank');
       }
       fetchDeeds();
+      window.dispatchEvent(new Event('paymentUpdated'));
       window.dispatchEvent(new Event('notifications-updated'));
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar pago ADM:', err);
       alert(err.response?.data?.message || 'Error al emitir el recibo de administración.');
     } finally {
       setSubmitting(false);
     }
-  };
+  }, { form: true });
 
   // Conteo por etapa
   const stageCounts = STAGES.reduce((acc, st) => {
@@ -622,6 +628,9 @@ export default function Escrituras({ openNewModal = false }) {
   }, {});
 
   const activeAdminObj = getActiveAdmin();
+
+  const paymentFormNeedsReference = /transferencia|depósito|deposito/i.test(paymentForm.payment_method || '') &&
+    (paymentForm.bank_reference?.trim().length ?? 0) < 3;
 
   return (
     <div className="space-y-6 font-sans animate-fade-in">
@@ -756,7 +765,7 @@ export default function Escrituras({ openNewModal = false }) {
         {/* Buscador */}
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <input id="escrituras-search" name="escrituras_search"
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -767,7 +776,7 @@ export default function Escrituras({ openNewModal = false }) {
 
         {/* Proyecto */}
         <div>
-          <select
+          <select id="escrituras-filter-project" name="escrituras_filter_project"
             value={selectedProject}
             onChange={(e) => setSelectedProject(e.target.value)}
             className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-slate-900"
@@ -784,7 +793,7 @@ export default function Escrituras({ openNewModal = false }) {
         {/* Administrador a Cargo (CEO vs Admin) */}
         {isSuperAdmin ? (
           <div>
-            <select
+            <select id="escrituras-filter-admin" name="escrituras_filter_admin"
               value={selectedAdmin}
               onChange={(e) => setSelectedAdmin(e.target.value)}
               className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-slate-900"
@@ -806,7 +815,7 @@ export default function Escrituras({ openNewModal = false }) {
 
         {/* Etapa */}
         <div>
-          <select
+          <select id="escrituras-filter-stage" name="escrituras_filter_stage"
             value={selectedStageFilter}
             onChange={(e) => setSelectedStageFilter(e.target.value)}
             className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-slate-900"
@@ -976,7 +985,7 @@ export default function Escrituras({ openNewModal = false }) {
 
                           {/* Selector rápido de Etapa (Avanzar / Retroceder) */}
                           <div className="flex items-center gap-1 pt-1 border-t border-slate-100">
-                            <button
+                            <ActionButton loading={handleUpdateStagePending}
                               type="button"
                               disabled={stageIdx === 0}
                               onClick={() => handleUpdateStage(deed.id, STAGES[stageIdx - 1])}
@@ -984,11 +993,12 @@ export default function Escrituras({ openNewModal = false }) {
                               className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 disabled:opacity-20 cursor-pointer"
                             >
                               <ArrowLeft className="w-3.5 h-3.5" />
-                            </button>
+                            </ActionButton>
 
-                            <select
+                            <select id={`escrituras-row-stage-${deed.id}`} name={`escrituras_row_stage_${deed.id}`}
                               value={deed.stage}
                               onChange={(e) => handleUpdateStage(deed.id, e.target.value)}
+                              disabled={handleUpdateStagePending}
                               className="flex-1 text-[10px] font-bold py-1 px-1.5 rounded border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none cursor-pointer"
                             >
                               {STAGES.map((s, idx) => (
@@ -998,7 +1008,7 @@ export default function Escrituras({ openNewModal = false }) {
                               ))}
                             </select>
 
-                            <button
+                            <ActionButton loading={handleUpdateStagePending}
                               type="button"
                               disabled={stageIdx === STAGES.length - 1}
                               onClick={() => handleUpdateStage(deed.id, STAGES[stageIdx + 1])}
@@ -1006,7 +1016,7 @@ export default function Escrituras({ openNewModal = false }) {
                               className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 disabled:opacity-20 cursor-pointer"
                             >
                               <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
+                            </ActionButton>
                           </div>
 
                           {/* Botón Cobro Administrativo */}
@@ -1199,8 +1209,8 @@ export default function Escrituras({ openNewModal = false }) {
               {/* Selección de Proyecto y Lote (Sincronización Bidireccional Automática) */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Proyecto Asignado *</label>
-                  <select
+                  <label htmlFor="escrituras-project" className="block font-bold text-slate-700 mb-1">Proyecto Asignado *</label>
+                  <select id="escrituras-project" name="escrituras_project"
                     required
                     value={newDeed.project_id}
                     onChange={(e) => handleProjectChangeInForm(e.target.value)}
@@ -1216,8 +1226,8 @@ export default function Escrituras({ openNewModal = false }) {
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Lote del Proyecto *</label>
-                  <select
+                  <label htmlFor="escrituras-lot" className="block font-bold text-slate-700 mb-1">Lote del Proyecto *</label>
+                  <select id="escrituras-lot" name="escrituras_lot"
                     required
                     value={newDeed.lot_id}
                     onChange={(e) => handleLotChangeInForm(e.target.value)}
@@ -1242,8 +1252,8 @@ export default function Escrituras({ openNewModal = false }) {
 
               {/* Cliente Solicitante / Titular con Sincronización Automática con Lote */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Cliente Solicitante / Titular *</label>
-                <select
+                <label htmlFor="escrituras-customer" className="block font-bold text-slate-700 mb-1">Cliente Solicitante / Titular *</label>
+                <select id="escrituras-customer" name="escrituras_customer"
                   required
                   value={newDeed.customer_id}
                   onChange={(e) => handleCustomerChangeInForm(e.target.value)}
@@ -1298,7 +1308,7 @@ export default function Escrituras({ openNewModal = false }) {
                     </div>
                   </div>
                 ) : (
-                  <select
+                  <select id="escrituras-assigned-admin" name="escrituras_assigned_admin"
                     required
                     value={newDeed.assigned_admin_id}
                     onChange={(e) => setNewDeed({ ...newDeed, assigned_admin_id: e.target.value })}
@@ -1321,8 +1331,8 @@ export default function Escrituras({ openNewModal = false }) {
               {/* Etapa Inicial y Presupuesto */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Etapa Inicial</label>
-                  <select
+                  <label htmlFor="escrituras-stage" className="block font-bold text-slate-700 mb-1">Etapa Inicial</label>
+                  <select id="escrituras-stage" name="escrituras_stage"
                     value={newDeed.stage}
                     onChange={(e) => setNewDeed({ ...newDeed, stage: e.target.value })}
                     className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-bold focus:ring-1 focus:ring-slate-900"
@@ -1336,8 +1346,8 @@ export default function Escrituras({ openNewModal = false }) {
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Presupuesto Trámite ($ USD)</label>
-                  <input
+                  <label htmlFor="escrituras-budget" className="block font-bold text-slate-700 mb-1">Presupuesto Trámite ($ USD)</label>
+                  <input id="escrituras-budget" name="escrituras_budget"
                     type="number"
                     step="0.01"
                     value={newDeed.total_budget}
@@ -1354,7 +1364,7 @@ export default function Escrituras({ openNewModal = false }) {
                   <label className="block font-bold text-slate-700">Notas Legales / Referencias</label>
                   <span className="text-[10px] text-slate-400">Clic en un motivo para autocompletar</span>
                 </div>
-                <textarea
+                <textarea id="escrituras-notes" name="escrituras_notes"
                   rows="2"
                   value={newDeed.notes}
                   onChange={(e) => setNewDeed({ ...newDeed, notes: e.target.value })}
@@ -1389,14 +1399,14 @@ export default function Escrituras({ openNewModal = false }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleCreateDeedPending}
                   type="submit"
                   disabled={submitting}
                   className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-md flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>Registrar Trámite</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1438,10 +1448,10 @@ export default function Escrituras({ openNewModal = false }) {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">
+                <label htmlFor="escrituras-edited-note" className="block font-bold text-slate-700 mb-1">
                   Nota de Situación Legal / Presupuestaria *
                 </label>
-                <textarea
+                <textarea id="escrituras-edited-note" name="escrituras_edited_note"
                   rows="3"
                   required
                   value={noteEditText}
@@ -1483,14 +1493,14 @@ export default function Escrituras({ openNewModal = false }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleSaveNotePending}
                   type="submit"
                   disabled={updatingNote}
                   className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-md flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {updatingNote && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>Guardar Nota</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1499,9 +1509,9 @@ export default function Escrituras({ openNewModal = false }) {
 
       {/* ================= MODAL 3: REGISTRAR COBRO MUNICIPAL / NOTARIAL (RECIBERA ADM) ================= */}
       {paymentModalOpen && selectedDeedForPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-full max-w-md overflow-hidden">
-            <div className="p-4 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden bg-white rounded-xl shadow-xl">
+            <div className="p-4 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-teal-400" />
                 <div>
@@ -1518,7 +1528,9 @@ export default function Escrituras({ openNewModal = false }) {
               </button>
             </div>
 
-            <form onSubmit={handleProcessAdmPayment} className="p-5 space-y-3.5 text-xs">
+            <form id="escrituras-payment" onSubmit={handleProcessAdmPayment} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 text-sm">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="min-w-0 space-y-3">
               {/* Resumen Expediente */}
               <div className="bg-slate-50 p-2.5 rounded-md border border-slate-200 text-slate-700 space-y-0.5">
                 <div className="font-bold text-slate-900">
@@ -1537,8 +1549,8 @@ export default function Escrituras({ openNewModal = false }) {
 
               {/* Monto */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Monto del Cobro ($ USD) *</label>
-                <input
+                <label htmlFor="escrituras-payment-amount" className="block font-bold text-slate-700 mb-1">Monto del Cobro ($ USD) *</label>
+                <input id="escrituras-payment-amount" name="escrituras_payment_amount"
                   type="number"
                   step="0.01"
                   required
@@ -1552,8 +1564,8 @@ export default function Escrituras({ openNewModal = false }) {
 
               {/* Concepto Detallado */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Concepto Detallado *</label>
-                <input
+                <label htmlFor="escrituras-payment-concept" className="block font-bold text-slate-700 mb-1">Concepto Detallado *</label>
+                <input id="escrituras-payment-concept" name="escrituras_payment_concept"
                   type="text"
                   required
                   value={paymentForm.concept_detail}
@@ -1565,8 +1577,8 @@ export default function Escrituras({ openNewModal = false }) {
 
               {/* Método de Pago */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Método de Pago *</label>
-                <select
+                <label htmlFor="escrituras-payment-method" className="block font-bold text-slate-700 mb-1">Método de Pago *</label>
+                <select id="escrituras-payment-method" name="escrituras_payment_method"
                   value={paymentForm.payment_method}
                   onChange={(e) => setPaymentForm({ ...paymentForm, payment_method: e.target.value })}
                   className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 font-medium text-slate-800"
@@ -1583,7 +1595,7 @@ export default function Escrituras({ openNewModal = false }) {
                   <label className="block font-bold text-amber-950 text-xs">
                     N° de Comprobante / Referencia Bancaria <span className="text-rose-600">*</span>
                   </label>
-                  <input
+                  <input id="escrituras-bank-reference" name="escrituras_bank_reference"
                     type="text"
                     required
                     value={paymentForm.bank_reference}
@@ -1603,77 +1615,36 @@ export default function Escrituras({ openNewModal = false }) {
                 </div>
               )}
 
-              {/* Pad de Firma Digital del Cliente / Solicitante */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="font-bold text-slate-700 text-xs">Firma del Cliente / Solicitante (Pad Táctil / Ratón)</label>
-                  <button
-                    type="button"
-                    onClick={() => sigCanvasRef.current?.clear()}
-                    className="text-[10px] text-slate-400 hover:text-slate-700 flex items-center gap-1 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" /> Limpiar
-                  </button>
-                </div>
-                <div className="border border-slate-200 rounded-md bg-slate-50 overflow-hidden relative">
-                  <SignatureCanvas
-                    ref={sigCanvasRef}
-                    penColor="#0f172a"
-                    canvasProps={{
-                      className: 'w-full h-24 cursor-crosshair',
-                    }}
-                  />
-                  <div className="absolute bottom-1 right-2 pointer-events-none text-[9px] text-slate-400 font-mono select-none">
-                    PAD CLIENTE &bull; VENDE & MÁS
-                  </div>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  Firma del cliente / solicitante que abona al trámite. La firma del administrador responsable se estampa automáticamente desde su propio perfil de usuario.
+              {paymentFormNeedsReference && (
+                <p className="rounded-md border border-rose-200 bg-rose-50 p-2 text-sm font-semibold text-rose-700">
+                  Debe ingresar el número de comprobante o referencia bancaria
                 </p>
+              )}
+                </div>
+                <div className="min-w-0 space-y-4">
+                  <SignaturePadField ref={sigCanvasRef} />
+                  <EmitterSignaturePreview />
+                </div>
               </div>
-
-              {(() => {
-                const isFormBankMethod = paymentForm.payment_method === 'Transferencia Bancaria' || paymentForm.payment_method === 'Depósito' || paymentForm.payment_method?.toLowerCase().includes('transferencia') || paymentForm.payment_method?.toLowerCase().includes('depósito') || paymentForm.payment_method?.toLowerCase().includes('deposito');
-                const isMissingRef = isFormBankMethod && (!paymentForm.bank_reference || paymentForm.bank_reference.trim().length < 3);
-
-                return (
-                  <>
-                    {isMissingRef && (
-                      <div className="p-2 rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold text-center">
-                        ⚠️ Debe ingresar el número de comprobante o referencia bancaria
-                      </div>
-                    )}
-
-                    <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPaymentModalOpen(false)}
-                        className="px-3 py-1.5 text-slate-600 hover:bg-slate-100 rounded-md font-medium cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={submitting || isMissingRef}
-                        className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-md flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                        <span>Emitir Recibo ADM &bull; PDF</span>
-                      </button>
-                    </div>
-                  </>
-                );
-              })()}
             </form>
+            <div className="shrink-0 border-t bg-white p-3 sm:p-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+              <button type="button" onClick={() => setPaymentModalOpen(false)} disabled={submitting} className="w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center rounded-md px-4 text-slate-700 hover:bg-slate-100">
+                Cancelar
+              </button>
+              <ActionButton loading={handleProcessAdmPaymentPending} type="submit" form="escrituras-payment" disabled={submitting || paymentFormNeedsReference} className="w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 text-white disabled:opacity-50">
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Emitir Recibo ADM
+              </ActionButton>
+            </div>
           </div>
         </div>
       )}
 
       {/* ================= MODAL DE NOTIFICACIÓN WHATSAPP Y CONFIRMACIÓN DE COBRO ADM ================= */}
       {paymentSuccessModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-scale-in">
-            <div className="p-4 border-b border-slate-100 bg-emerald-50/90 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden bg-white rounded-xl shadow-xl">
+            <div className="shrink-0 p-4 border-b border-slate-100 bg-emerald-50/90 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-xs">
                   <CheckCircle2 className="w-5 h-5" />
@@ -1694,7 +1665,7 @@ export default function Escrituras({ openNewModal = false }) {
               </button>
             </div>
 
-            <div className="p-5 space-y-4 text-xs">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 space-y-4 text-xs">
               <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Detalles del Comprobante</span>
@@ -1729,6 +1700,7 @@ export default function Escrituras({ openNewModal = false }) {
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap gap-3">
               {/* Botón 1: Enviar al Cliente por WhatsApp */}
               <button
                 type="button"
@@ -1749,7 +1721,7 @@ export default function Escrituras({ openNewModal = false }) {
                   });
                   openWhatsApp(paymentSuccessModal.customerPhone, msg);
                 }}
-                className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center"
               >
                 <MessageCircle className="w-4 h-4" />
                 <span>📲 Enviar Recibo al Cliente (WhatsApp)</span>
@@ -1774,33 +1746,37 @@ export default function Escrituras({ openNewModal = false }) {
                   });
                   openWhatsApp(DEFAULT_CEO_PHONE, msg);
                 }}
-                className="w-full py-2.5 px-4 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center"
               >
                 <MessageCircle className="w-4 h-4 text-emerald-700" />
                 <span>📲 Reportar Cobro al CEO (WhatsApp)</span>
               </button>
 
-              <div className="flex items-center gap-2 pt-1">
+
                 {/* Botón Abrir PDF */}
                 <a
-                  href={paymentSuccessModal.receiptUrl}
+                  href={receiptPdfUrl(paymentSuccessModal.receiptUrl)}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex-1 py-2 px-3 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition shadow-xs cursor-pointer"
+                  className="flex-1 py-2 px-3 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition shadow-xs cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Abrir Recibo (PDF)</span>
                 </a>
 
-              </div>
 
               <button
                 type="button"
-                onClick={() => setPaymentSuccessModal(null)}
-                className="w-full py-1 text-center text-xs font-semibold text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                onClick={() => {
+                  setSelectedDeedForPayment(paymentSuccessModal.deed);
+                  setPaymentSuccessModal(null);
+                  setPaymentModalOpen(true);
+                }}
+                className="w-full py-1 text-center text-xs font-semibold text-slate-400 hover:text-slate-700 transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center"
               >
-                Cerrar Ventana
+                Nuevo Cobro
               </button>
+              </div>
             </div>
           </div>
         </div>

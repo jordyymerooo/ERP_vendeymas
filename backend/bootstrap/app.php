@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Middleware\HandleApiTokenFromQuery;
+use App\Http\Middleware\PreventDuplicateRequests;
+use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
@@ -23,6 +25,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(prepend: [
             HandleApiTokenFromQuery::class,
         ]);
+
+        $middleware->api(append: [PreventDuplicateRequests::class]);
+        $middleware->appendToPriorityList(SubstituteBindings::class, PreventDuplicateRequests::class);
 
         // Evitar error Route [login] not defined en peticiones API no autenticadas
         $middleware->redirectGuestsTo(fn (Request $request) => $request->is('api/*') ? null : '/login');

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Helpers\RoleSecurity;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\User;
@@ -11,6 +12,41 @@ use Illuminate\Support\Facades\Auth;
 
 class AuthController extends Controller
 {
+    public function requestPasswordReset(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['email' => 'required|email']);
+        $user = User::where('email', $validated['email'])->first();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'No encontramos una cuenta asociada a ese correo electrónico.',
+            ], 404);
+        }
+
+        if (RoleSecurity::isRealSuperAdmin($user)) {
+            return response()->json([
+                'type' => 'ceo',
+                'message' => 'Por políticas de seguridad, el restablecimiento de la cuenta CEO / Gerencia debe solicitarse directamente al equipo de Desarrollo de Software para su intervención técnica en el servidor.',
+            ]);
+        }
+
+        if (!$user->hasAnyRole(['Administrador', 'Asesor Comercial', 'Topógrafo'])) {
+            return response()->json([
+                'message' => 'El rol de esta cuenta requiere asistencia del equipo de Desarrollo de Software.',
+            ], 422);
+        }
+
+        $user->update([
+            'password_reset_requested' => true,
+            'password_reset_requested_at' => now(),
+        ]);
+
+        return response()->json([
+            'type' => 'staff',
+            'message' => 'Solicitud enviada al CEO / Gerencia. Comuníquese con Gerencia para recibir su nueva contraseña temporal.',
+        ]);
+    }
+
     /**
      * Autenticación de usuarios y emisión de token personal de acceso Sanctum.
      */

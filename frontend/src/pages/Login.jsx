@@ -1,27 +1,33 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import { useAuth } from '../context/AuthContext';
+import { getAuthenticatedRole, getHomeRouteByRole } from '../utils/roleRoutes';
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Lock, Mail, Eye, EyeOff, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 import Logo from '../components/Logo';
+import PasswordRecoveryDialog from '../components/PasswordRecoveryDialog';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
   const navigate = useNavigate();
 
-  // Si ya tiene sesión activa, redirigir al dashboard
-  useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      navigate('/dashboard', { replace: true });
-    }
-  }, [navigate]);
+  const { user } = useAuth();
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  useEffect(() => {
+    const home = getHomeRouteByRole(getAuthenticatedRole(user));
+    if (localStorage.getItem('auth_token')?.trim() && home !== '/login') {
+      navigate(home, { replace: true });
+    }
+  }, [navigate, user]);
+
+  const [handleSubmit, handleSubmitPending] = useSingleSubmit(async (e) => {
     setErrorMessage(null);
     setIsLoading(true);
 
@@ -32,24 +38,19 @@ export default function Login() {
       });
 
       if (res.data && res.data.token) {
-        // Almacenar token y sesión en localStorage
+        const userData = res.data.user;
+        const activeRole = getAuthenticatedRole(userData);
         localStorage.setItem('auth_token', res.data.token);
-        localStorage.setItem('user', JSON.stringify(res.data.user));
+        localStorage.setItem('user', JSON.stringify(userData));
+        localStorage.setItem('user_role', activeRole || '');
 
-        // Determinar rol activo
-        const userRoles = res.data.roles || [];
-        const activeRole = userRoles.includes('Super Admin') ? 'Super Admin' : (userRoles[0] || '');
-        localStorage.setItem('user_role', activeRole);
-
-        // Notificar a otras instancias si es necesario
         window.dispatchEvent(new Event('auth-change'));
-
-        // Redirigir al dashboard
-        navigate('/dashboard');
+        navigate(getHomeRouteByRole(activeRole), { replace: true });
       } else {
         setErrorMessage('Respuesta inesperada del servidor de autenticación.');
       }
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error de autenticación:', err);
       const serverMsg =
         err.response?.data?.message ||
@@ -58,7 +59,7 @@ export default function Login() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, { form: true });
 
   return (
     <div className="min-h-screen w-full bg-slate-100/80 flex flex-col justify-center items-center px-4 py-10 sm:px-6 lg:px-8">
@@ -105,7 +106,7 @@ export default function Login() {
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
+                <input name="email"
                   id="email"
                   type="email"
                   required
@@ -126,20 +127,17 @@ export default function Login() {
                 >
                   Contraseña
                 </label>
-                <a 
-                  href="#recuperar" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    alert('Para restablecer su contraseña, contacte al Administrador del sistema.');
-                  }} 
+                <button
+                  type="button"
+                  onClick={() => setRecoveryOpen(true)}
                   className="text-[11px] font-medium text-slate-600 hover:text-slate-900 transition"
                 >
                   ¿Olvidaste tu contraseña?
-                </a>
+                </button>
               </div>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
+                <input name="password"
                   id="password"
                   type={showPassword ? 'text' : 'password'}
                   required
@@ -161,7 +159,7 @@ export default function Login() {
 
             {/* Botón de Enviar */}
             <div className="pt-2">
-              <button
+              <ActionButton loading={handleSubmitPending}
                 type="submit"
                 disabled={isLoading}
                 className="w-full flex justify-center items-center py-2.5 px-4 rounded-md text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition shadow-xs focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900 disabled:opacity-75 disabled:cursor-not-allowed cursor-pointer gap-2"
@@ -177,7 +175,7 @@ export default function Login() {
                     <ArrowRight className="w-4 h-4 text-slate-300" />
                   </>
                 )}
-              </button>
+              </ActionButton>
             </div>
           </form>
 
@@ -188,6 +186,7 @@ export default function Login() {
           &copy; {new Date().getFullYear()} Vende & más. Gestión Inmobiliaria Segura.
         </p>
       </div>
+      {recoveryOpen && <PasswordRecoveryDialog initialEmail={email} onClose={() => setRecoveryOpen(false)} />}
     </div>
   );
 }

@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -15,6 +17,7 @@ export default function Proyectos() {
   const navigate = useNavigate();
 
   const [proyectos, setProyectos] = useState([]);
+  const initialProjectsRequested = useRef(false);
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState(null);
 
@@ -26,21 +29,21 @@ export default function Proyectos() {
   const [nuevoProyecto, setNuevoProyecto] = useState({
     nombre: '',
     ubicacion: '',
-    lotes: '',
-    hectareas: '',
+    description: '',
+    lot_blocks: [],
   });
 
   // Modal para que el CEO asigne el Administrador al proyecto
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [selectedProjectForAssign, setSelectedProjectForAssign] = useState(null);
   const [selectedAdminId, setSelectedAdminId] = useState('');
-  const [administratorsList, setAdministratorsList] = useState([]);
+  const [administratorsList, setAdministratorsList] = useState(null);
+  const [loadingAdministrators, setLoadingAdministrators] = useState(false);
   const [savingAdmin, setSavingAdmin] = useState(false);
 
   useEffect(() => {
     const handleAuthChange = () => {
       setUserRole(localStorage.getItem('user_role') || 'Super Admin');
-      fetchProyectos();
     };
     window.addEventListener('storage', handleAuthChange);
     window.addEventListener('auth-change', handleAuthChange);
@@ -51,13 +54,16 @@ export default function Proyectos() {
   }, []);
 
   const fetchAdministrators = async () => {
+    setLoadingAdministrators(true);
     try {
-      const res = await axios.get('/api/users');
+      const res = await axios.get('/api/users/options');
       const users = res.data?.data || res.data || [];
       const admins = users.filter((u) => u.roles?.some((r) => r.name === 'Administrador'));
       setAdministratorsList(admins);
     } catch (err) {
       console.error('Error al cargar administradores:', err);
+    } finally {
+      setLoadingAdministrators(false);
     }
   };
 
@@ -76,8 +82,9 @@ export default function Proyectos() {
   };
 
   useEffect(() => {
+    if (initialProjectsRequested.current) return;
+    initialProjectsRequested.current = true;
     fetchProyectos();
-    fetchAdministrators();
   }, []);
 
   const handleOpenAssignModal = (proj) => {
@@ -85,11 +92,11 @@ export default function Proyectos() {
     const currentAdminId = proj.administrators?.[0]?.id || proj.assigned_users?.[0]?.id || '';
     setSelectedAdminId(currentAdminId);
     setAssignModalOpen(true);
+    if (!administratorsList && !loadingAdministrators) fetchAdministrators();
   };
 
-  const handleSaveAssignAdmin = async (e) => {
-    e.preventDefault();
-    if (!selectedProjectForAssign) return;
+  const [handleSaveAssignAdmin, handleSaveAssignAdminPending] = useSingleSubmit(async (e) => {
+    if (!selectedProjectForAssign || !administratorsList) return;
     setSavingAdmin(true);
     try {
       const projId = selectedProjectForAssign.id;
@@ -104,13 +111,14 @@ export default function Proyectos() {
       setAssignModalOpen(false);
       fetchProyectos();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al asignar administrador:', err);
       setToastMessage('No se pudo asignar el administrador al proyecto.');
     } finally {
       setSavingAdmin(false);
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
+  }, { form: true });
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -120,8 +128,7 @@ export default function Proyectos() {
     }));
   };
 
-  const handleGuardarProyecto = async (e) => {
-    e.preventDefault();
+  const [handleGuardarProyecto, handleGuardarProyectoPending] = useSingleSubmit(async (e) => {
     if (!nuevoProyecto.nombre.trim()) return;
 
     setIsSubmitting(true);
@@ -129,25 +136,26 @@ export default function Proyectos() {
       await axios.post('/api/projects', {
         nombre: nuevoProyecto.nombre.trim(),
         ubicacion: nuevoProyecto.ubicacion.trim() || 'Vía Principal',
-        lotes: Number(nuevoProyecto.lotes) || 50,
-        hectareas: Number(nuevoProyecto.hectareas) || 5,
+        description: nuevoProyecto.description,
+        lot_blocks: nuevoProyecto.lot_blocks,
         estado: 'En Desarrollo',
       });
 
       setToastMessage(`Proyecto "${nuevoProyecto.nombre}" registrado exitosamente.`);
-      setNuevoProyecto({ nombre: '', ubicacion: '', lotes: '', hectareas: '' });
+      setNuevoProyecto({ nombre: '', ubicacion: '', description: '', lot_blocks: [] });
       setIsModalOpen(false);
       fetchProyectos();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar proyecto:', err);
-      setToastMessage('No se pudo registrar el nuevo proyecto.');
+      setToastMessage(Object.values(err.response?.data?.errors || {}).flat()[0] || 'No se pudo registrar el nuevo proyecto.');
     } finally {
       setIsSubmitting(false);
       setTimeout(() => {
         setToastMessage(null);
       }, 5000);
     }
-  };
+  }, { form: true });
 
   return (
     <div className="space-y-6">
@@ -206,7 +214,7 @@ export default function Proyectos() {
             const ubicacion = proyecto.ubicacion || proyecto.location || 'Sin Ubicación';
             const totalLotes = Number(proyecto.lotesTotales ?? proyecto.lots_count ?? 0);
             const vendLotes = Number(proyecto.lotesVendidos ?? proyecto.sold_lots_count ?? 0);
-            const dispLotes = Math.max(0, totalLotes - vendLotes);
+            const dispLotes = Number(proyecto.available_lots_count ?? Math.max(0, totalLotes - vendLotes));
             const porcentaje = totalLotes > 0 ? Math.round((vendLotes / totalLotes) * 100) : 0;
             const slug = nombre.toLowerCase().replace(/\s+/g, '-');
 
@@ -356,7 +364,7 @@ export default function Proyectos() {
       {/* Modal para Crear Proyecto Formal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fade-in">
-          <div className="bg-white rounded-lg w-full max-w-md p-6 shadow-xl border border-slate-200 transition-all">
+          <div className="bg-white rounded-lg w-full max-w-2xl max-h-[92dvh] overflow-y-auto p-4 sm:p-6 shadow-xl border border-slate-200 transition-all">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
               <div className="flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-slate-800" />
@@ -375,11 +383,12 @@ export default function Proyectos() {
 
             <form onSubmit={handleGuardarProyecto} className="space-y-3.5">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label htmlFor="new-project-name" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Nombre de la Lotización *
                 </label>
                 <input
                   type="text"
+                  id="new-project-name"
                   name="nombre"
                   required
                   placeholder="Ej: Residencial Guapuca"
@@ -390,11 +399,12 @@ export default function Proyectos() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label htmlFor="new-project-location" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Ubicación / Sector *
                 </label>
                 <input
                   type="text"
+                  id="new-project-location"
                   name="ubicacion"
                   required
                   placeholder="Ej: Vía Principal Km 12"
@@ -404,36 +414,45 @@ export default function Proyectos() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                    Total Lotes *
-                  </label>
-                  <input
-                    type="number"
-                    name="lotes"
-                    required
-                    placeholder="Ej: 50"
-                    value={nuevoProyecto.lotes}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                    Superficie (Ha)
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    name="hectareas"
-                    placeholder="Ej: 4.5"
-                    value={nuevoProyecto.hectareas}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition"
-                  />
-                </div>
-              </div>
+              <label className="block text-sm font-semibold text-slate-700">
+                Descripción (opcional)
+                <textarea id="new-project-description" name="description" maxLength={5000} value={nuevoProyecto.description} onChange={handleInputChange} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-normal" />
+              </label>
+
+              <fieldset className="space-y-3 rounded-lg border border-slate-200 p-3">
+                <legend className="px-1 text-sm font-bold">Grupos de Lotes</legend>
+                {nuevoProyecto.lot_blocks.map((block, index) => (
+                  <div key={index} className="grid grid-cols-1 items-end gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                    {[
+                      { name: 'quantity', label: 'Cantidad de Lotes', min: 1, max: 500, step: 1 },
+                      { name: 'area', label: 'Área (m²)', min: 0.01, max: 99999999.99, step: 0.01 },
+                      { name: 'price', label: 'Precio ($ USD)', min: 0.01, max: 9999999999.99, step: 0.01 },
+                    ].map(({ name, label, ...limits }) => (
+                      <label key={name} className="min-w-0 text-xs font-semibold">
+                        {label}
+                        <input id={`project-group-${index + 1}-${name}`} name={`lot_blocks[${index}][${name}]`} type="number" required {...limits} value={block[name]} onChange={(event) => {
+                          const value = event.target.value;
+                          setNuevoProyecto((current) => ({
+                            ...current,
+                            lot_blocks: current.lot_blocks.map((row, i) => i === index ? { ...row, [name]: value } : row),
+                          }));
+                        }} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-2 text-base font-normal" />
+                      </label>
+                    ))}
+                    <button type="button" aria-label={`Quitar grupo ${index + 1}`} onClick={() => setNuevoProyecto((current) => ({
+                      ...current, lot_blocks: current.lot_blocks.filter((_, i) => i !== index),
+                    }))} className="rounded-md px-2 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">Quitar</button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => setNuevoProyecto((current) => ({
+                  ...current, lot_blocks: [...current.lot_blocks, { quantity: '', area: '', price: '' }],
+                }))} className="min-h-[42px] rounded-md border border-slate-300 px-3 text-sm font-semibold">
+                  + Agregar Grupo de Lotes
+                </button>
+                <p className="text-sm text-slate-600" aria-live="polite">
+                  Total a generar: {nuevoProyecto.lot_blocks.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0)} lotes distribuidos en {nuevoProyecto.lot_blocks.length} grupos
+                </p>
+              </fieldset>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
@@ -443,14 +462,14 @@ export default function Proyectos() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleGuardarProyectoPending}
                   type="submit"
                   disabled={isSubmitting}
                   className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-md transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{isSubmitting ? 'Guardando...' : 'Guardar Proyecto'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -486,21 +505,29 @@ export default function Proyectos() {
 
             <form onSubmit={handleSaveAssignAdmin} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="project-assigned-admin" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Seleccionar Administrador Responsable
                 </label>
                 <select
+                  id="project-assigned-admin"
+                  name="admin_id"
+                  disabled={loadingAdministrators || !administratorsList}
                   value={selectedAdminId}
                   onChange={(e) => setSelectedAdminId(e.target.value)}
                   className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-600 focus:border-indigo-600 transition"
                 >
-                  <option value="">-- Sin Administrador Asignado --</option>
-                  {administratorsList.map((adm) => (
+                  <option value="">{loadingAdministrators ? 'Cargando administradores…' : 'Sin administrador asignado'}</option>
+                  {administratorsList?.map((adm) => (
                     <option key={adm.id} value={adm.id}>
                       {adm.name} ({adm.email})
                     </option>
                   ))}
                 </select>
+                {!loadingAdministrators && !administratorsList && (
+                  <button type="button" onClick={fetchAdministrators} className="mt-2 text-xs font-semibold text-indigo-700 underline">
+                    Reintentar carga de administradores
+                  </button>
+                )}
                 <p className="text-[11px] text-slate-500 mt-1.5">
                   Al asignar este proyecto, el Administrador tendrá acceso exclusivo para gestionar las 12 etapas de escrituras, lotes y recibos correspondientes.
                 </p>
@@ -514,14 +541,14 @@ export default function Proyectos() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleSaveAssignAdminPending}
                   type="submit"
-                  disabled={savingAdmin}
+                  disabled={savingAdmin || !administratorsList}
                   className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition cursor-pointer disabled:opacity-50"
                 >
                   {savingAdmin && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{savingAdmin ? 'Guardando...' : 'Guardar en 1 Clic'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>

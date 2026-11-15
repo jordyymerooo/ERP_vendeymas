@@ -24,16 +24,42 @@ class CustomerController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $query = $this->scopedCustomers($request, Customer::select([
+            'id', 'name', 'email', 'phone', 'id_card', 'assigned_user_id', 'created_at', 'updated_at',
+        ])->with([
+            'lots:id,project_id,customer_id,lot_number,total_price,status',
+            'lots.project:id,name,location',
+            'advisor:id,name,email',
+        ]));
+
+        // Búsqueda por término
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'ilike', "%{$search}%")
+                    ->orWhere('id_card', 'ilike', "%{$search}%")
+                    ->orWhere('email', 'ilike', "%{$search}%")
+                    ->orWhere('phone', 'ilike', "%{$search}%");
+            });
+        }
+
+        $customers = $query->latest('id')->paginate($this->perPage($request))->withQueryString();
+
+        return response()->json($customers);
+    }
+
+    public function options(Request $request): JsonResponse
+    {
+        $query = $this->scopedCustomers($request, Customer::select('id', 'name', 'email', 'phone', 'id_card'));
+
+        return response()->json(['data' => $query->orderBy('name')->orderBy('id')->get()]);
+    }
+
+    private function scopedCustomers(Request $request, \Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
         $user = $request->user() ?: auth()->user();
         $isSuperAdmin = $this->checkIsSuperAdmin($request);
         $simulate = $request->header('X-Simulate-Role') ?: $request->header('X-Simulated-Role') ?: $request->query('simulate_role');
-
-        $query = Customer::select(['id', 'name', 'email', 'phone', 'id_card', 'assigned_user_id', 'created_at', 'updated_at'])
-            ->with([
-                'lots:id,project_id,customer_id,lot_number,total_price,status',
-                'lots.project:id,name,location',
-                'advisor:id,name,email'
-            ]);
 
         // Reglas de Visibilidad por Rol:
         if ($isSuperAdmin) {
@@ -64,20 +90,7 @@ class CustomerController extends Controller
             }
         }
 
-        // Búsqueda por término
-        if ($request->filled('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'ilike', "%{$search}%")
-                    ->orWhere('id_card', 'ilike', "%{$search}%")
-                    ->orWhere('email', 'ilike', "%{$search}%")
-                    ->orWhere('phone', 'ilike', "%{$search}%");
-            });
-        }
-
-        $customers = $query->latest('id')->paginate(50);
-
-        return response()->json($customers);
+        return $query;
     }
 
     /**

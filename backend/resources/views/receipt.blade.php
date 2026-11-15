@@ -21,6 +21,7 @@
         default => ($payment->cashier?->roles?->first()?->name ?? 'Asesor Comercial'),
     };
 
+    $customerSignature = $payment->customer_signature ?: $payment->signature_base64;
     $signatureFooter = $emitterRole . ' &bull; Vende & más';
 @endphp
 <!DOCTYPE html>
@@ -194,8 +195,8 @@
         <tr>
             <!-- Columna Izquierda (Firma del Cliente) -->
             <td width="50%" align="center" style="text-align: center; vertical-align: bottom; padding: 0 15px;">
-                @if(!empty($payment->signature_base64) && str_starts_with($payment->signature_base64, 'data:image') && !str_contains($payment->signature_base64, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='))
-                    <img src="{{ $payment->signature_base64 }}" style="max-height: 80px; max-width: 200px; object-fit: contain;" alt="Firma Cliente" />
+                @if(!empty($customerSignature) && str_starts_with($customerSignature, 'data:image') && !str_contains($customerSignature, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='))
+                    <img src="{{ $customerSignature }}" style="max-height: 80px; max-width: 200px; object-fit: contain;" alt="Firma Cliente" />
                 @else
                     <div style="height: 60px;"></div>
                 @endif

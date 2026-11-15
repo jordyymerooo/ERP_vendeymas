@@ -6,10 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Lot;
+use App\Models\Payment;
+use App\Models\TopographyJob;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class ProjectController extends Controller
 {
@@ -22,15 +26,22 @@ class ProjectController extends Controller
         $user = $request->user() ?: auth()->user();
         $simulatedRole = $request->header('X-Simulate-Role') ?: $request->header('X-Simulated-Role') ?: $request->query('simulate_role');
 
-        $query = Project::select(['id', 'name', 'location', 'status', 'created_at', 'updated_at'])->with([
+        $query = Project::select(['id', 'name', 'location', 'description', 'status', 'created_at', 'updated_at'])->with([
             'administrators:id,name,email',
-            'assignedUsers:id,name,email',
         ])->withCount([
             'lots',
+            'lots as available_lots_count' => fn ($lots) => $lots->where('status', 'Disponible'),
             'lots as sold_lots_count' => function ($query) {
-                $query->where('status', 'Vendido')->whereNotNull('customer_id');
+                $query->whereIn('status', ['Vendido', 'Pagado / Vendido'])->whereNotNull('customer_id');
             },
-        ]);
+        ])->withSum([
+            'lotPayments as total_collected' => function ($payments) use ($user) {
+                $payments->where('payments.status', 'Válido');
+                if (!$user?->hasRole('Super Admin')) {
+                    $payments->where('payments.user_id', $user?->id);
+                }
+            },
+        ], 'amount_paid')->withCasts(['total_collected' => 'float']);
 
         // Determinar si aplica el filtro estricto de proyectos asignados
         $isAdminRole = ($user && $user->hasRole('Administrador') && !$user->hasRole('Super Admin') && $user->id !== 1)
@@ -44,12 +55,17 @@ class ProjectController extends Controller
                    ?: User::role('Administrador')->first());
 
             if ($effectiveAdmin) {
-                $assignedIds = $effectiveAdmin->assignedProjects()->pluck('projects.id')->toArray();
-                $query->whereIn('id', $assignedIds);
+                $query->whereIn('id', $effectiveAdmin->assignedProjects()->select('projects.id'));
+            } else {
+                $query->whereRaw('1 = 0');
             }
         }
 
         $projects = $query->orderBy('id', 'asc')->get();
+        foreach ($projects as $project) {
+            $project->setRelation('assignedUsers', $project->administrators);
+            $project->total_collected ??= 0.0;
+        }
 
         return response()->json([
             'success' => true,
@@ -69,31 +85,47 @@ class ProjectController extends Controller
             'ubicacion' => 'nullable|string|max:255',
             'status' => 'nullable|string|max:50',
             'estado' => 'nullable|string|max:50',
-            'lotes' => 'nullable|numeric',
-            'hectareas' => 'nullable|numeric',
+            'description' => 'nullable|string|max:5000',
+            'lot_blocks' => 'nullable|array|max:100',
+            'lot_blocks.*.quantity' => 'required|integer|min:1|max:500',
+            'lot_blocks.*.area' => 'required|numeric|gt:0|max:99999999.99|decimal:0,2',
+            'lot_blocks.*.price' => 'required|numeric|gt:0|max:9999999999.99|decimal:0,2',
+            'lot_blocks.*.prefix' => 'nullable|string|max:40',
         ]);
 
         $name = strip_tags(trim($validated['name'] ?? $validated['nombre'] ?? 'Nuevo Proyecto'));
         $location = strip_tags(trim($validated['location'] ?? $validated['ubicacion'] ?? 'Ubicación Principal'));
         $status = strip_tags(trim($validated['status'] ?? $validated['estado'] ?? 'En Desarrollo'));
 
-        $project = Project::create([
-            'name' => $name,
-            'location' => $location,
-            'status' => $status,
-        ]);
-
-        $lotesTotales = (int) ($request->input('lotes') ?: $request->input('lotesTotales') ?: 50);
-        for ($i = 1; $i <= $lotesTotales; $i++) {
-            Lot::create([
-                'project_id' => $project->id,
-                'customer_id' => null,
-                'lot_number' => 'Lote ' . $i,
-                'area_m2' => 200.00,
-                'total_price' => 25000.00,
-                'status' => 'Disponible',
+        $project = DB::transaction(function () use ($validated, $name, $location, $status) {
+            $project = Project::create([
+                'name' => $name,
+                'location' => $location,
+                'status' => $status,
+                'description' => isset($validated['description']) ? strip_tags($validated['description']) : null,
             ]);
-        }
+
+            $number = 1;
+            $now = now();
+            foreach ($validated['lot_blocks'] ?? [] as $block) {
+                $prefix = trim(strip_tags($block['prefix'] ?? '')) ?: 'Lote';
+                $rows = [];
+                for ($i = 0; $i < $block['quantity']; $i++) {
+                    $rows[] = [
+                        'project_id' => $project->id,
+                        'lot_number' => $prefix.' '.$number++,
+                        'area_m2' => $block['area'],
+                        'total_price' => $block['price'],
+                        'status' => 'Disponible',
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+                Lot::insert($rows);
+            }
+
+            return $project;
+        });
 
         $project->loadCount([
             'lots',
@@ -106,6 +138,38 @@ class ProjectController extends Controller
             'success' => true,
             'data' => $project,
         ], 201);
+    }
+
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        DB::transaction(function () use ($request, $id) {
+            $project = Project::lockForUpdate()->findOrFail($id);
+            $lots = $project->lots()->orderBy('id')->lockForUpdate()->pluck('id');
+            $deeds = $project->deeds()->orderBy('id')->lockForUpdate()->pluck('id');
+            $jobs = TopographyJob::where('project_id', $id)->orderBy('id')->lockForUpdate()->pluck('id');
+
+            Payment::whereIn('lot_id', $lots)
+                ->orWhereIn('deed_id', $deeds)
+                ->orWhereIn('topography_job_id', $jobs)
+                ->delete();
+            $project->deeds()->delete();
+            $project->lots()->delete();
+            TopographyJob::whereKey($jobs)->delete();
+            $project->delete();
+
+            AuditLog::record(
+                $request->user()->id,
+                'Proyectos',
+                "Eliminó el proyecto {$project->name} (#{$id}) y sus registros asociados.",
+                $request->ip(),
+                $request->userAgent()
+            );
+        }, 3);
+
+        Cache::forget('system_mora_count');
+        Cache::forget('dashboard_stats');
+
+        return response()->json(['success' => true, 'message' => 'Proyecto eliminado.']);
     }
 
     /**
@@ -184,6 +248,7 @@ class ProjectController extends Controller
                 return [
                     'id' => 'REC-' . str_pad($payment->id, 5, '0', STR_PAD_LEFT),
                     'payment_id' => $payment->id,
+                    'receipt_code' => $payment->receipt_code,
                     'fecha' => $payment->created_at ? $payment->created_at->format('d/m/Y') : 'Reciente',
                     'hora' => $payment->created_at ? $payment->created_at->format('H:i:s') : '',
                     'monto' => (float) $payment->amount_paid,

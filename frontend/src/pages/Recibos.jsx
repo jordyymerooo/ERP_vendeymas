@@ -1,4 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import { receiptPdfUrl } from '../utils/receiptPdfUrl';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import ReceiptSequenceDialog from '../components/ReceiptSequenceDialog';
+import { useAuth } from '../context/AuthContext';
+import { getAuthenticatedRole } from '../utils/roleRoutes';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DirectPaymentModal from '../components/DirectPaymentModal';
 import axios from 'axios';
@@ -11,8 +18,6 @@ import {
   Eye,
   Download,
   Loader2,
-  ChevronLeft,
-  ChevronRight,
   Filter,
   DollarSign,
   FileCheck,
@@ -28,6 +33,7 @@ import {
   Landmark,
   MessageCircle,
   Plus,
+  Hash,
 } from 'lucide-react';
 import {
   DEFAULT_CEO_PHONE,
@@ -39,6 +45,39 @@ import {
 export default function Recibos({ openDirectPaymentModal = false }) {
   const navigate = useNavigate();
 
+  const { user } = useAuth();
+  const canConfigureSequences = getAuthenticatedRole(user) === 'Super Admin';
+  const [sequences, setSequences] = useState([]);
+  const [sequenceDialogOpen, setSequenceDialogOpen] = useState(false);
+  const [sequenceError, setSequenceError] = useState(false);
+
+  useEffect(() => {
+    let controller;
+    const refresh = async () => {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      try {
+        const { data } = await axios.get('/api/receipt-sequences', { signal: request.signal });
+        if (request.signal.aborted) return;
+        setSequences(data.data);
+        setSequenceError(false);
+      } catch {
+        if (!request.signal.aborted) setSequenceError(true);
+      }
+    };
+    refresh();
+    window.addEventListener('paymentUpdated', refresh);
+    window.addEventListener('receiptSequencesUpdated', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      controller?.abort();
+      window.removeEventListener('paymentUpdated', refresh);
+      window.removeEventListener('receiptSequencesUpdated', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
+
   // ── Modal de cobro directo ────────────────────────────────────────────────
   const [directModalOpen, setDirectModalOpen] = useState(false);
 
@@ -49,14 +88,9 @@ export default function Recibos({ openDirectPaymentModal = false }) {
     }
   }, [openDirectPaymentModal]);
 
-  // Refrescar tabla cuando se emite un pago exitoso
-  useEffect(() => {
-    const handler = () => fetchPayments(1);
-    window.addEventListener('paymentUpdated', handler);
-    return () => window.removeEventListener('paymentUpdated', handler);
-  }, []);
-
   const [payments, setPayments] = useState([]);
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
   const [pagination, setPagination] = useState({});
   const [loading, setLoading] = useState(true);
 
@@ -65,7 +99,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
   const isSuperAdmin = userRole === 'Super Admin';
 
   const getInitialReceiptBook = (role) => {
-    if (role === 'Topógrafo') return 'TOPOGRAFIA';
+    if (['Topógrafo', 'Topografo'].includes(role)) return 'TOPOGRAFIA';
     if (role === 'Asesor Comercial') return 'ASESORIA';
     if (role === 'Administrador') return 'ADMINISTRACION';
     return 'ALL';
@@ -179,10 +213,12 @@ export default function Recibos({ openDirectPaymentModal = false }) {
 
   // Cargar comprobantes emitidos y arqueo de caja
   const fetchPayments = async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
       const params = new URLSearchParams();
       params.append('page', page);
+      params.append('per_page', perPage);
       if (selectedProject) {
         params.append('project', selectedProject);
       }
@@ -206,6 +242,11 @@ export default function Recibos({ openDirectPaymentModal = false }) {
       }
 
       const res = await axios.get(`/api/payments?${params.toString()}`);
+      if (requestId !== listRequest.current) return;
+      if (page > res.data.last_page) {
+        await fetchPayments(res.data.last_page);
+        return;
+      }
       setPayments(res.data.data || []);
       setPagination({
         current_page: res.data.current_page,
@@ -219,9 +260,10 @@ export default function Recibos({ openDirectPaymentModal = false }) {
         setCashCloseSummary(res.data.cash_close_summary);
       }
     } catch (err) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al consultar recibos:', err);
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
@@ -231,7 +273,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
 
   useEffect(() => {
     fetchPayments(1);
-  }, [selectedProject, debouncedSearch, startDate, endDate, paymentMethod, statusFilter, receiptBookFilter]);
+  }, [selectedProject, debouncedSearch, startDate, endDate, paymentMethod, statusFilter, receiptBookFilter, perPage]);
 
   // Accesos rápidos de fechas
   const setFilterToday = () => {
@@ -270,6 +312,13 @@ export default function Recibos({ openDirectPaymentModal = false }) {
     return `http://${window.location.hostname}:8000${endpoint}?${params.toString()}`;
   };
 
+  // Refrescar tabla cuando se emite un pago exitoso
+  useEffect(() => {
+    const handler = () => fetchPayments(1);
+    window.addEventListener('paymentUpdated', handler);
+    return () => window.removeEventListener('paymentUpdated', handler);
+  }, [selectedProject, debouncedSearch, startDate, endDate, paymentMethod, statusFilter, receiptBookFilter, perPage]);
+
   const handleExportExcel = () => {
     const url = buildExportUrl('excel');
     window.open(url, '_blank');
@@ -289,8 +338,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
   };
 
   // Confirmar anulación formal
-  const handleConfirmVoid = async (e) => {
-    e.preventDefault();
+  const [handleConfirmVoid, handleConfirmVoidPending] = useSingleSubmit(async (e) => {
     if (!voidReason.trim() || voidReason.trim().length < 5) {
       setVoidError('El motivo de anulación es obligatorio y debe tener al menos 5 caracteres.');
       return;
@@ -312,6 +360,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
       setVoidReason('');
       fetchPayments(pagination.current_page || 1);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al anular comprobante:', err);
       const msg = err.response?.data?.message || 'Error al procesar la anulación del comprobante.';
       setVoidError(msg);
@@ -321,7 +370,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
       setVoidSubmitting(false);
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
+  }, { form: true });
 
   return (
     <div className="space-y-6">
@@ -375,17 +424,24 @@ export default function Recibos({ openDirectPaymentModal = false }) {
             <button
               type="button"
               onClick={() => { setDirectModalOpen(true); navigate('/recibos/emitir', { replace: true }); }}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 shadow-2xs transition cursor-pointer"
+              className="inline-flex items-center gap-2 min-h-[46px] px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 shadow-2xs transition cursor-pointer"
               title="Registrar un cobro sin navegar por proyectos"
             >
               <Plus className="w-4 h-4" />
               <span>Emitir Recibo Directo</span>
             </button>
+            {canConfigureSequences && (
+              <button type="button" disabled={sequences.length !== 4} onClick={() => setSequenceDialogOpen(true)}
+                className="inline-flex min-h-[46px] items-center gap-2 rounded-lg border border-slate-300 px-3.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                <Hash className="h-4 w-4" /> Configurar Numeración
+              </button>
+            )}
+
 
             <button
               type="button"
               onClick={handleExportExcel}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 shadow-2xs transition cursor-pointer"
+              className="inline-flex items-center gap-2 min-h-[46px] px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 shadow-2xs transition cursor-pointer"
               title="Descargar reporte contable en Excel (.csv UTF-8)"
             >
               <FileSpreadsheet className="w-4 h-4" />
@@ -395,7 +451,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
             <button
               type="button"
               onClick={handleExportPdf}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 active:bg-black shadow-2xs transition cursor-pointer"
+              className="inline-flex items-center gap-2 min-h-[46px] px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 active:bg-black shadow-2xs transition cursor-pointer"
               title="Generar e imprimir Reporte Oficial de Cierre de Caja en PDF"
             >
               <Printer className="w-4 h-4" />
@@ -405,7 +461,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
         </div>
 
         {/* Pestañas (Tabs) de las 4 Reciberas Oficiales e Independientes */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-100">
+        <div className="flex flex-wrap items-center gap-2 pb-1 border-b border-slate-100">
           {[
             { id: 'ALL', label: 'Todas las Reciberas', code: 'AUDITORÍA', desc: 'Auditoría Global' },
             { id: 'ADMINISTRACION', label: 'Recibera Administración (ADM-)', code: 'ADM', desc: 'Escrituras, Municipio, Hipotecas' },
@@ -417,17 +473,18 @@ export default function Recibos({ openDirectPaymentModal = false }) {
               if (isSuperAdmin) return true;
               if (userRole === 'Administrador') return tab.id === 'ADMINISTRACION';
               if (userRole === 'Asesor Comercial') return tab.id === 'ASESORIA';
-              if (userRole === 'Topógrafo') return tab.id === 'TOPOGRAFIA';
+              if (['Topógrafo', 'Topografo'].includes(userRole)) return tab.id === 'TOPOGRAFIA';
               return false;
             })
             .map((tab) => {
               const isActive = receiptBookFilter === tab.id;
+              const sequence = sequences.find(({ prefix }) => prefix === tab.code + '-');
               return (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setReceiptBookFilter(tab.id)}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer shrink-0 border ${
+                  className={`flex items-center gap-2 min-h-[46px] px-3.5 py-2 rounded-lg text-left text-xs font-bold transition cursor-pointer max-w-full border ${
                     isActive
                       ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                       : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
@@ -440,11 +497,21 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                   >
                     {tab.code}
                   </span>
-                  <span>{tab.label}</span>
+                  <span>
+                    {tab.label}
+                    {sequence && (
+                      <span className="mt-1 block text-[11px] font-medium opacity-85">
+                        {sequence.current_number ? `Actual: #${String(sequence.current_number).padStart(5, '0')}` : 'Sin emisiones'}
+                        {' · Siguiente: '}{sequence.next_receipt_code}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
         </div>
+
+        {sequenceError && <p role="status" className="text-xs text-rose-700">No se pudo consultar la numeración de las reciberas.</p>}
 
         {/* Panel de Arqueo de Caja Diario (4 Indicadores Contables en Tiempo Real) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -547,7 +614,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                 <span>Fecha:</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <input
+                <input id="recibos-fecha-desde" name="recibos_fecha_desde"
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
@@ -555,7 +622,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                   title="Fecha Desde"
                 />
                 <span className="text-xs text-slate-400 font-bold">a</span>
-                <input
+                <input id="recibos-fecha-hasta" name="recibos_fecha_hasta"
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
@@ -592,7 +659,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
 
             {/* Selectores de Método de Pago y Estado */}
             <div className="flex items-center gap-2 flex-wrap">
-              <select
+              <select id="recibos-payment-method" name="recibos_payment_method"
                 value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}
                 className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer shadow-2xs"
@@ -603,7 +670,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                 <option value="Depósito">Depósito en Cuenta</option>
               </select>
 
-              <select
+              <select id="recibos-status" name="recibos_status"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer shadow-2xs"
@@ -616,11 +683,11 @@ export default function Recibos({ openDirectPaymentModal = false }) {
           </div>
 
           {/* Fila 2: Filtro por Proyecto y Buscador */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {/* Filtro por Proyecto */}
             <div className="relative">
               <Filter className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <select
+              <select id="recibos-project" name="recibos_project"
                 value={selectedProject}
                 onChange={(e) => setSelectedProject(e.target.value)}
                 className="w-full pl-9 pr-4 py-2 rounded-md border border-slate-200 bg-slate-50 focus:bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-400 transition cursor-pointer"
@@ -637,7 +704,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
             {/* Buscador por comprobante o cliente */}
             <div className="relative sm:col-span-2">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
+              <input id="recibos-search" name="recibos_search"
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -827,7 +894,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                         <div className="inline-flex items-center gap-1.5">
                           {/* Ver PDF */}
                           <a
-                            href={`http://${window.location.hostname}:8000/api/payments/${p.id}/pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`}
+                            href={receiptPdfUrl(`/api/payments/${p.id}/pdf`)}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 transition cursor-pointer shadow-xs border border-slate-300"
@@ -839,7 +906,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
 
                           {/* Descargar */}
                           <a
-                            href={`http://${window.location.hostname}:8000/api/payments/${p.id}/pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`}
+                            href={receiptPdfUrl(`/api/payments/${p.id}/pdf`)}
                             download={`Recibo_${p.receipt_number}.pdf`}
                             target="_blank"
                             rel="noreferrer"
@@ -897,47 +964,14 @@ export default function Recibos({ openDirectPaymentModal = false }) {
           </div>
         )}
 
-        {/* Paginación */}
-        {pagination.total > 0 && (
-          <div className="p-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500 bg-slate-50/50">
-            <span>
-              Mostrando {pagination.from || 0} a {pagination.to || 0} de {pagination.total || 0} comprobantes
-            </span>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fetchPayments(pagination.current_page - 1)}
-                disabled={pagination.current_page <= 1}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer shadow-xs"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" />
-                <span>Anterior</span>
-              </button>
-
-              <span className="font-semibold text-slate-700 px-2">
-                Pág. {pagination.current_page} de {pagination.last_page}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => fetchPayments(pagination.current_page + 1)}
-                disabled={pagination.current_page >= pagination.last_page}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer shadow-xs"
-              >
-                <span>Siguiente</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
+        <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchPayments} onPerPageChange={setPerPage} loading={loading} />
       </div>
 
       {/* ================= MODAL FORMAL DE ANULACIÓN DE COMPROBANTE ================= */}
       {voidModalOpen && selectedPaymentForVoid && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fade-in">
-          <div className="bg-white rounded-lg w-full max-w-lg p-6 shadow-xl border border-slate-200 transition-all">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between shrink-0 border-b border-slate-100 p-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
                   <ShieldAlert className="w-5 h-5" />
@@ -960,6 +994,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
               </button>
             </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
             {/* Aviso informativo */}
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 mb-4 text-xs text-amber-900 flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -996,12 +1031,12 @@ export default function Recibos({ openDirectPaymentModal = false }) {
             </div>
 
             {/* Formulario con Motivo Obligatorio */}
-            <form onSubmit={handleConfirmVoid} className="space-y-4">
+            <form id="void-receipt" onSubmit={handleConfirmVoid} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                   Motivo formal de anulación <span className="text-rose-600">*</span>
                 </label>
-                <textarea
+                <textarea id="recibos-void-reason" name="recibos_void_reason"
                   rows="3"
                   value={voidReason}
                   onChange={(e) => setVoidReason(e.target.value)}
@@ -1020,34 +1055,44 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                 </div>
               )}
 
+            </form>
+            </div>
               {/* Botones de acción */}
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <div className="shrink-0 border-t bg-white p-3 sm:p-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
                 <button
                   type="button"
                   onClick={() => setVoidModalOpen(false)}
                   disabled={voidSubmitting}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md transition cursor-pointer"
+                  className="w-full sm:w-auto min-h-[46px] px-4 text-base font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md transition cursor-pointer"
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleConfirmVoidPending}
                   type="submit"
+                  form="void-receipt"
                   disabled={voidSubmitting || voidReason.trim().length < 5}
-                  className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
+                  className="w-full sm:w-auto min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2 text-base font-semibold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {voidSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <Ban className="w-3.5 h-3.5" />
                   <span>{voidSubmitting ? 'Anulando...' : 'Confirmar Anulación Contable'}</span>
-                </button>
+                </ActionButton>
               </div>
-            </form>
+
           </div>
         </div>
       )}
 
+      {sequenceDialogOpen && (
+        <ReceiptSequenceDialog sequences={sequences} onClose={() => setSequenceDialogOpen(false)} onSaved={() => {
+          setSequenceDialogOpen(false);
+          window.dispatchEvent(new Event('receiptSequencesUpdated'));
+        }} />
+      )}
       {/* ── Modal de Cobro Directo Universal ─────────────────────────────── */}
       {directModalOpen && (
         <DirectPaymentModal
+          sequences={sequences}
           onClose={() => {
             setDirectModalOpen(false);
             navigate('/recibos', { replace: true });

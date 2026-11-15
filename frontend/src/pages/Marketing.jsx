@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -21,7 +24,6 @@ import {
   UserPlus,
   Clock,
   Sparkles,
-  ChevronRight,
   FileText,
   Trash2,
   Users,
@@ -141,6 +143,9 @@ export default function Marketing() {
 
   // Modo de vista: 'kanban' (4 etapas activas) o 'discarded' (Archivo de descartados)
   const [viewMode, setViewMode] = useState('kanban');
+  const [pagination, setPagination] = useState({});
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
 
   // Filtros
   const [selectedProjectId, setSelectedProjectId] = useState('');
@@ -195,16 +200,23 @@ export default function Marketing() {
   };
 
   // 2. Cargar prospectos desde backend aplicando aislamiento por asesor
-  const fetchLeads = async () => {
+  const fetchLeads = async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
-      const params = {};
+      const params = { page, per_page: perPage, view: viewMode };
       if (selectedProjectId) params.project_id = selectedProjectId;
       if (selectedAdvisorId && selectedAdvisorId !== 'TODOS') params.advisor_id = selectedAdvisorId;
       if (searchTerm) params.search = searchTerm;
 
       const res = await axios.get('/api/leads', { params });
+      if (requestId !== listRequest.current) return;
+      if (page > res.data.last_page) {
+        await fetchLeads(res.data.last_page);
+        return;
+      }
       setLeads(res.data.data || []);
+      setPagination(res.data);
       if (res.data.stats) {
         setStats(res.data.stats);
       }
@@ -215,9 +227,10 @@ export default function Marketing() {
         setAdvisorsList(res.data.advisors_list);
       }
     } catch (err) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al cargar prospectos:', err);
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
@@ -226,12 +239,13 @@ export default function Marketing() {
   }, []);
 
   useEffect(() => {
-    fetchLeads();
-  }, [selectedProjectId, selectedAdvisorId, searchTerm]);
+    listRequest.current++;
+    const timer = setTimeout(() => fetchLeads(), 250);
+    return () => clearTimeout(timer);
+  }, [selectedProjectId, selectedAdvisorId, searchTerm, viewMode, perPage]);
 
   // Manejar creación de nuevo prospecto
-  const handleCreateLead = async (e) => {
-    e.preventDefault();
+  const [handleCreateLead, handleCreateLeadPending] = useSingleSubmit(async (e) => {
     if (!newLeadForm.name.trim()) return;
 
     setIsSubmittingLead(true);
@@ -264,13 +278,14 @@ export default function Marketing() {
       });
       fetchLeads();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar prospecto:', err);
       alert('Error al registrar el prospecto.');
     } finally {
       setIsSubmittingLead(false);
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  }, { form: true });
 
   // Abrir modal de descarte
   const handleOpenDiscardModal = (lead) => {
@@ -280,8 +295,7 @@ export default function Marketing() {
   };
 
   // Confirmar descarte con motivo documentado
-  const handleConfirmDiscard = async (e) => {
-    e.preventDefault();
+  const [handleConfirmDiscard, handleConfirmDiscardPending] = useSingleSubmit(async (e) => {
     if (!leadToDiscard) return;
 
     const reasonToSave = discardReason.trim() || 'Descartado por decisión del cliente / asesor';
@@ -299,16 +313,17 @@ export default function Marketing() {
       setDiscardReason('');
       fetchLeads();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al descartar prospecto:', err);
       alert(err.response?.data?.message || 'Error al descartar el prospecto.');
     } finally {
       setIsSubmittingDiscard(false);
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  }, { form: true });
 
   // Reactivar un prospecto descartado
-  const handleReactivateLead = async (lead) => {
+  const [handleReactivateLead, handleReactivateLeadPending] = useSingleSubmit(async (lead) => {
     try {
       await axios.put(`/api/leads/${lead.id}/stage`, {
         stage: 'Nuevo Prospecto',
@@ -316,12 +331,13 @@ export default function Marketing() {
       setToastMessage(`Prospecto "${lead.name}" reactivado en etapa "Nuevo Prospecto".`);
       fetchLeads();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al reactivar prospecto:', err);
       alert(err.response?.data?.message || 'Error al reactivar el prospecto.');
     } finally {
       setTimeout(() => setToastMessage(null), 4000);
     }
-  };
+  });
 
   // Abrir modal de edición / reasignación
   const handleOpenEditModal = (lead) => {
@@ -340,8 +356,7 @@ export default function Marketing() {
   };
 
   // Guardar edición / reasignación
-  const handleSaveEdit = async (e) => {
-    e.preventDefault();
+  const [handleSaveEdit, handleSaveEditPending] = useSingleSubmit(async (e) => {
     if (!editingLead) return;
 
     setIsSubmittingEdit(true);
@@ -366,16 +381,17 @@ export default function Marketing() {
       setEditingLead(null);
       fetchLeads();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al actualizar prospecto:', err);
       alert(err.response?.data?.message || 'Error al actualizar el prospecto.');
     } finally {
       setIsSubmittingEdit(false);
       setTimeout(() => setToastMessage(null), 4000);
     }
-  };
+  }, { form: true });
 
   // Cambiar etapa del prospecto
-  const handleUpdateStage = async (leadId, newStage) => {
+  const [handleUpdateStage, handleUpdateStagePending] = useSingleSubmit(async (leadId, newStage) => {
     if (newStage === 'Descartado') {
       const targetLead = leads.find((l) => l.id === leadId);
       if (targetLead) {
@@ -397,13 +413,14 @@ export default function Marketing() {
       setToastMessage(res.data.message || `Prospecto movido a ${newStage}`);
       fetchLeads();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al cambiar etapa:', err);
       alert(err.response?.data?.message || 'No se pudo actualizar la etapa en el servidor.');
       fetchLeads();
     } finally {
       setTimeout(() => setToastMessage(null), 3500);
     }
-  };
+  });
 
   // Mover prospecto a la etapa previa o siguiente
   const handleMoveStep = (lead, direction) => {
@@ -426,17 +443,17 @@ export default function Marketing() {
     e.preventDefault();
   };
 
-  const handleDrop = (e, targetStage) => {
+  const [handleDrop] = useSingleSubmit(async (e, targetStage) => {
     e.preventDefault();
     const leadId = Number(e.dataTransfer.getData('text/plain') || draggedLeadId);
     if (leadId) {
-      handleUpdateStage(leadId, targetStage);
+      await handleUpdateStage(leadId, targetStage);
     }
     setDraggedLeadId(null);
-  };
+  });
 
   // Acción Principal: Convertir en Cliente y Asignar Lote
-  const handleConvertLead = async (lead) => {
+  const [handleConvertLead, handleConvertLeadPending] = useSingleSubmit(async (lead) => {
     setConvertingLeadId(lead.id);
     try {
       const res = await axios.post(`/api/leads/${lead.id}/convert`);
@@ -452,11 +469,12 @@ export default function Marketing() {
         }
       }, 1000);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al convertir prospecto en cliente:', err);
       alert(err.response?.data?.message || 'Error al convertir prospecto.');
       setConvertingLeadId(null);
     }
-  };
+  });
 
   const activeLeads = leads.filter((l) => l.stage !== 'Descartado');
   const discardedLeads = leads.filter((l) => l.stage === 'Descartado');
@@ -503,7 +521,7 @@ export default function Marketing() {
             {/* Selector Destacado de Asesor */}
             <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
               <span className="text-xs font-medium text-slate-300">Filtrar por Asesor:</span>
-              <select
+              <select id="crm-filter-advisor" name="crm_filter_advisor"
                 value={selectedAdvisorId}
                 onChange={(e) => setSelectedAdvisorId(e.target.value)}
                 className="bg-slate-900 text-white text-xs font-bold px-2.5 py-1.5 rounded-md border border-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
@@ -693,7 +711,7 @@ export default function Marketing() {
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
           <div className="relative w-full sm:w-80">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
+            <input id="crm-search" name="crm_search"
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -704,7 +722,7 @@ export default function Marketing() {
 
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <Filter className="w-4 h-4 text-slate-400 shrink-0" />
-            <select
+            <select id="crm-filter-project" name="crm_filter_project"
               value={selectedProjectId}
               onChange={(e) => setSelectedProjectId(e.target.value)}
               className="px-3 py-2 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 cursor-pointer w-full sm:w-auto transition"
@@ -849,7 +867,7 @@ export default function Marketing() {
                               {/* Botón Destacado: Convertir en Cliente si está en Cierre Ganado */}
                               {stage.key === 'Cierre Ganado' && (
                                 <div className="pt-1">
-                                  <button
+                                  <ActionButton loading={handleConvertLeadPending}
                                     type="button"
                                     disabled={isConverting}
                                     onClick={() => handleConvertLead(lead)}
@@ -867,7 +885,7 @@ export default function Marketing() {
                                         <ArrowRight className="w-3 h-3 text-teal-300" />
                                       </>
                                     )}
-                                  </button>
+                                  </ActionButton>
                                 </div>
                               )}
 
@@ -876,7 +894,7 @@ export default function Marketing() {
                                 <button
                                   type="button"
                                   onClick={() => handleMoveStep(lead, -1)}
-                                  disabled={stage.key === STAGES[0].key}
+                                  disabled={handleUpdateStagePending || stage.key === STAGES[0].key}
                                   className="px-2 py-1 rounded-md hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:hover:bg-transparent flex items-center gap-0.5 cursor-pointer"
                                   title="Mover a etapa anterior"
                                 >
@@ -885,9 +903,10 @@ export default function Marketing() {
                                 </button>
 
                                 <div className="flex items-center gap-1">
-                                  <select
+                                  <select id={`crm-row-stage-${lead.id}`} name={`crm_row_stage_${lead.id}`}
                                     value={lead.stage}
                                     onChange={(e) => handleUpdateStage(lead.id, e.target.value)}
+                                    disabled={handleUpdateStagePending}
                                     className="text-[10px] py-0.5 px-1.5 rounded-md border border-slate-300 bg-white text-slate-700 cursor-pointer focus:outline-none"
                                   >
                                     {STAGES.map((s) => (
@@ -911,7 +930,7 @@ export default function Marketing() {
                                 <button
                                   type="button"
                                   onClick={() => handleMoveStep(lead, 1)}
-                                  disabled={stage.key === STAGES[STAGES.length - 1].key}
+                                  disabled={handleUpdateStagePending || stage.key === STAGES[STAGES.length - 1].key}
                                   className="px-2 py-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30 disabled:hover:bg-transparent flex items-center gap-0.5 cursor-pointer"
                                   title="Mover a etapa siguiente"
                                 >
@@ -941,7 +960,7 @@ export default function Marketing() {
             <div className="flex items-center gap-2">
               <Archive className="w-4 h-4 text-rose-600" />
               <h3 className="text-sm font-bold text-slate-900">
-                Archivo de Prospectos Descartados ({discardedLeads.length})
+                Archivo de Prospectos Descartados ({pagination.total ?? 0})
               </h3>
             </div>
             <p className="text-xs text-slate-500">
@@ -994,7 +1013,7 @@ export default function Marketing() {
                         {lead.updated_at ? new Date(lead.updated_at).toLocaleDateString('es-EC', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A'}
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <button
+                        <ActionButton loading={handleReactivateLeadPending}
                           type="button"
                           onClick={() => handleReactivateLead(lead)}
                           className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition cursor-pointer"
@@ -1002,7 +1021,7 @@ export default function Marketing() {
                         >
                           <RotateCcw className="w-3 h-3 text-indigo-600" />
                           <span>Reactivar</span>
-                        </button>
+                        </ActionButton>
                       </td>
                     </tr>
                   ))}
@@ -1012,6 +1031,8 @@ export default function Marketing() {
           )}
         </div>
       )}
+
+      <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchLeads} onPerPageChange={setPerPage} loading={loading} />
 
       {/* ========================================================================= */}
       {/* 5. MODAL: REGISTRAR NUEVO PROSPECTO */}
@@ -1039,10 +1060,10 @@ export default function Marketing() {
 
             <form onSubmit={handleCreateLead} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="crm-new-name" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Nombre Completo del Prospecto *
                 </label>
-                <input
+                <input id="crm-new-name" name="crm_new_name"
                   type="text"
                   required
                   placeholder="Ej: Ing. Pedro Alarcón"
@@ -1054,10 +1075,10 @@ export default function Marketing() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-new-phone" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Teléfono / WhatsApp *
                   </label>
-                  <input
+                  <input id="crm-new-phone" name="crm_new_phone"
                     type="text"
                     required
                     placeholder="0991234567"
@@ -1068,10 +1089,10 @@ export default function Marketing() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-new-email" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Correo Electrónico (Opcional)
                   </label>
-                  <input
+                  <input id="crm-new-email" name="crm_new_email"
                     type="email"
                     placeholder="correo@ejemplo.com"
                     value={newLeadForm.email}
@@ -1083,10 +1104,10 @@ export default function Marketing() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-new-project" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Proyecto de Interés
                   </label>
-                  <select
+                  <select id="crm-new-project" name="crm_new_project"
                     value={newLeadForm.project_id}
                     onChange={(e) => setNewLeadForm({ ...newLeadForm, project_id: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition cursor-pointer"
@@ -1100,10 +1121,10 @@ export default function Marketing() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-new-stage" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Etapa Inicial
                   </label>
-                  <select
+                  <select id="crm-new-stage" name="crm_new_stage"
                     value={newLeadForm.stage}
                     onChange={(e) => setNewLeadForm({ ...newLeadForm, stage: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition cursor-pointer"
@@ -1120,10 +1141,10 @@ export default function Marketing() {
               {/* Asignación de Asesor: Visible si es Super Admin */}
               {isSuperAdmin && filteredAdvisorsList.length > 0 && (
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-new-advisor" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Asesor Comercial Responsable
                   </label>
-                  <select
+                  <select id="crm-new-advisor" name="crm_new_advisor"
                     value={newLeadForm.user_id}
                     onChange={(e) => setNewLeadForm({ ...newLeadForm, user_id: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition cursor-pointer"
@@ -1139,10 +1160,10 @@ export default function Marketing() {
               )}
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="crm-new-notes" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Notas / Detalles de la Visita
                 </label>
-                <textarea
+                <textarea id="crm-new-notes" name="crm_new_notes"
                   rows={3}
                   placeholder="Detalles sobre preferencias de lote, observaciones, presupuesto aproximado..."
                   value={newLeadForm.notes}
@@ -1159,14 +1180,14 @@ export default function Marketing() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleCreateLeadPending}
                   type="submit"
                   disabled={isSubmittingLead}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingLead && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-300" />}
                   <span>{isSubmittingLead ? 'Guardando...' : 'Crear Prospecto'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1229,7 +1250,7 @@ export default function Marketing() {
                   </div>
                 </div>
 
-                <textarea
+                <textarea id="crm-discard-reason" name="crm_discard_reason"
                   required
                   rows={3}
                   placeholder="Detalla la razón por la que no se concretó la venta..."
@@ -1247,14 +1268,14 @@ export default function Marketing() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleConfirmDiscardPending}
                   type="submit"
                   disabled={isSubmittingDiscard || !discardReason.trim()}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingDiscard && <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />}
                   <span>{isSubmittingDiscard ? 'Descartando...' : 'Confirmar Descarte'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1292,10 +1313,10 @@ export default function Marketing() {
 
             <form onSubmit={handleSaveEdit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="crm-edit-name" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Nombre del Prospecto *
                 </label>
-                <input
+                <input id="crm-edit-name" name="crm_edit_name"
                   type="text"
                   required
                   value={editingLead.name}
@@ -1306,10 +1327,10 @@ export default function Marketing() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-edit-phone" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Teléfono
                   </label>
-                  <input
+                  <input id="crm-edit-phone" name="crm_edit_phone"
                     type="text"
                     value={editingLead.phone}
                     onChange={(e) => setEditingLead({ ...editingLead, phone: e.target.value })}
@@ -1318,10 +1339,10 @@ export default function Marketing() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-edit-email" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Correo
                   </label>
-                  <input
+                  <input id="crm-edit-email" name="crm_edit_email"
                     type="email"
                     value={editingLead.email}
                     onChange={(e) => setEditingLead({ ...editingLead, email: e.target.value })}
@@ -1333,10 +1354,10 @@ export default function Marketing() {
               {/* Reasignar Asesor Responsable (Exclusivo Super Admin) */}
               {isSuperAdmin && (
                 <div className="bg-indigo-50/70 p-3.5 rounded-lg border border-indigo-200 space-y-1.5">
-                  <label className="block text-xs font-bold text-indigo-900 uppercase tracking-wider">
+                  <label htmlFor="crm-edit-advisor" className="block text-xs font-bold text-indigo-900 uppercase tracking-wider">
                     Reasignar Asesor Responsable
                   </label>
-                  <select
+                  <select id="crm-edit-advisor" name="crm_edit_advisor"
                     value={editingLead.user_id}
                     onChange={(e) => setEditingLead({ ...editingLead, user_id: e.target.value })}
                     className="w-full px-3 py-2 rounded-md border border-indigo-300 bg-white text-xs font-bold text-indigo-950 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
@@ -1355,10 +1376,10 @@ export default function Marketing() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-edit-project" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Proyecto
                   </label>
-                  <select
+                  <select id="crm-edit-project" name="crm_edit_project"
                     value={editingLead.project_id}
                     onChange={(e) => setEditingLead({ ...editingLead, project_id: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition cursor-pointer"
@@ -1373,10 +1394,10 @@ export default function Marketing() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="crm-edit-stage" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Etapa Actual
                   </label>
-                  <select
+                  <select id="crm-edit-stage" name="crm_edit_stage"
                     value={editingLead.stage}
                     onChange={(e) => setEditingLead({ ...editingLead, stage: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 transition cursor-pointer"
@@ -1392,10 +1413,10 @@ export default function Marketing() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="crm-edit-notes" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Notas
                 </label>
-                <textarea
+                <textarea id="crm-edit-notes" name="crm_edit_notes"
                   rows={2}
                   value={editingLead.notes}
                   onChange={(e) => setEditingLead({ ...editingLead, notes: e.target.value })}
@@ -1411,14 +1432,14 @@ export default function Marketing() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleSaveEditPending}
                   type="submit"
                   disabled={isSubmittingEdit}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingEdit && <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />}
                   <span>{isSubmittingEdit ? 'Guardando...' : 'Guardar Cambios'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>

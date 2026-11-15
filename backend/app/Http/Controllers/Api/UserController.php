@@ -8,6 +8,7 @@ use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 
@@ -16,14 +17,48 @@ class UserController extends Controller
     /**
      * Retorna el listado completo de usuarios junto con sus roles y proyectos asignados.
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $users = User::with(['roles', 'assignedProjects'])->orderBy('id', 'asc')->get();
+        $query = $this->usersQuery()->addSelect('password_reset_requested', 'password_reset_requested_at');
+        if ($request->filled('role') && $request->input('role') !== 'TODOS') {
+            $query->whereHas('roles', fn ($role) => $role->where('name', $request->input('role')));
+        }
+        if ($request->filled('search')) {
+            $term = '%'.trim($request->input('search')).'%';
+            $query->where(fn ($user) => $user->whereLike('name', $term)
+                ->orWhereLike('email', $term)->orWhereLike('phone', $term));
+        }
+
+        $counts = DB::table('model_has_roles')
+            ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+            ->where('model_type', (new User)->getMorphClass())
+            ->groupBy('roles.name')
+            ->selectRaw('roles.name, count(*) as count')->pluck('count', 'name');
 
         return response()->json([
             'success' => true,
-            'data' => $users,
+            ...$query->paginate($this->perPage($request))->withQueryString()->toArray(),
+            'role_counts' => $counts,
         ]);
+    }
+
+    public function options(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        abort_unless($actor->hasAnyRole(['Super Admin', 'Administrador']), 403);
+        $query = $this->usersQuery()->select('id', 'name', 'email');
+        if (!$actor->hasRole('Super Admin')) {
+            $query->whereKey($actor->id);
+        }
+        $users = $query->get();
+
+        return response()->json(['data' => $users]);
+    }
+
+    private function usersQuery()
+    {
+        return User::select('id', 'name', 'email', 'phone', 'created_at')
+            ->with(['roles:id,name', 'assignedProjects:id,name,location'])->orderBy('id');
     }
 
     /**
@@ -104,6 +139,81 @@ class UserController extends Controller
         ]);
     }
 
+    public function resetUserPassword(Request $request, string|int $id): JsonResponse
+    {
+        if ($denied = $this->ensureSuperAdmin($request)) {
+            return $denied;
+        }
+
+        $validated = $request->validate(['new_password' => 'required|string|min:6|max:60']);
+        $actor = $request->user();
+
+        return DB::transaction(function () use ($actor, $id, $request, $validated) {
+            $user = User::lockForUpdate()->findOrFail($id);
+
+            if (!$actor->is($user) && RoleSecurity::isRealSuperAdmin($user)) {
+                return response()->json([
+                    'message' => 'Solo el titular puede restablecer la contraseña de otra cuenta de Gerencia.',
+                ], 403);
+            }
+
+            $user->update([
+                'password' => Hash::make($validated['new_password']),
+                'password_reset_requested' => false,
+                'password_reset_requested_at' => null,
+            ]);
+            $user->tokens()->delete();
+
+            AuditLog::record(
+                $actor->id,
+                'Usuarios',
+                "Restableció la contraseña de {$user->name}",
+                $request->ip(),
+                $request->userAgent()
+            );
+
+            return response()->json(['message' => 'Contraseña restablecida y sesiones anteriores cerradas.']);
+        });
+    }
+
+    public function updateProfile(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'name' => 'required|string|max:120',
+            'email' => ['required', 'email', 'max:150', Rule::unique('users', 'email')->ignore($user->id)],
+            'phone' => 'nullable|string|max:25',
+            'password' => 'nullable|string|min:6',
+        ]);
+
+        $user->update($this->profileAttributes($validated));
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Perfil actualizado con éxito.',
+            'data' => $user->load('roles'),
+        ]);
+    }
+
+    private function profileAttributes(array $validated): array
+    {
+        $attributes = [
+            'name' => strip_tags(trim($validated['name'])),
+            'email' => $validated['email'],
+        ];
+
+        if (array_key_exists('phone', $validated)) {
+            $phone = strip_tags(trim($validated['phone'] ?? ''));
+            $attributes['phone'] = $phone === '' ? null : $phone;
+        }
+
+        if (!empty($validated['password'])) {
+            $attributes['password'] = Hash::make($validated['password']);
+        }
+
+        return $attributes;
+    }
+
     /**
      * Actualiza la información, el rol y los proyectos asignados de un usuario.
      */
@@ -117,42 +227,29 @@ class UserController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
-            'phone' => 'nullable|string|max:20',
+            'email' => ['required', 'email', 'max:150', Rule::unique('users', 'email')->ignore($user->id)],
+            'phone' => 'nullable|string|max:25',
             'password' => 'nullable|string|min:6',
             'role' => 'required|string|exists:roles,name',
             'project_ids' => 'nullable|array',
             'project_ids.*' => 'exists:projects,id',
         ]);
 
-        $userData = [
-            'name' => strip_tags(trim($validated['name'])),
-            'email' => $validated['email'],
-        ];
+        DB::transaction(function () use ($request, $user, $validated) {
+            $user->update($this->profileAttributes($validated));
+            $user->syncRoles([$validated['role']]);
 
-        if ($request->has('phone')) {
-            $userData['phone'] = !empty($validated['phone']) ? strip_tags(trim($validated['phone'])) : '0989996421';
-        }
-
-        if (!empty($validated['password'])) {
-            $userData['password'] = Hash::make($validated['password']);
-        }
-
-        $user->update($userData);
-        $user->syncRoles([$validated['role']]);
-
-        if ($request->has('project_ids')) {
-            $user->assignedProjects()->sync($request->input('project_ids', []));
-        }
-
-        // Auditoría
-        AuditLog::record(
-            $request->user()?->id ?? 1,
-            'Usuarios',
-            "Actualizó información/rol de: {$user->name} (Rol: {$validated['role']})",
-            $request->ip(),
-            $request->userAgent()
-        );
+            if (array_key_exists('project_ids', $validated)) {
+                $user->assignedProjects()->sync($validated['project_ids'] ?? []);
+            }
+            AuditLog::record(
+                $request->user()->id,
+                'Usuarios',
+                "Actualizó información/rol de: {$user->name} (Rol: {$validated['role']})",
+                $request->ip(),
+                $request->userAgent()
+            );
+        });
 
         return response()->json([
             'success' => true,

@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import axios from 'axios';
 import {
   Activity,
@@ -14,8 +17,6 @@ import {
   Calendar,
   Clock,
   Layers,
-  ChevronLeft,
-  ChevronRight,
   Info,
   CheckCircle2,
   Copy,
@@ -30,6 +31,8 @@ import {
 
 export default function Auditoria() {
   const [logs, setLogs] = useState([]);
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
   const [pagination, setPagination] = useState({
     current_page: 1,
     last_page: 1,
@@ -69,17 +72,20 @@ export default function Auditoria() {
 
   // Cargar registros de auditoría
   const fetchLogs = async (page = 1, mod = selectedModule, search = searchTerm) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
-      const params = { page };
+      const params = { page, per_page: perPage };
       if (mod && mod !== 'TODOS') params.module = mod;
       if (search && search.trim()) params.search = search.trim();
 
       const res = await axios.get('/api/audit-logs', { params });
+      if (requestId !== listRequest.current) return;
       const data = res.data;
       if (data && data.data) {
         setLogs(data.data);
         setPagination({
+          module_counts: data.module_counts,
           current_page: data.current_page,
           last_page: data.last_page,
           total: data.total,
@@ -88,21 +94,21 @@ export default function Auditoria() {
         });
       }
     } catch (err) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al obtener registros de auditoría:', err);
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchLogs(1, selectedModule, searchTerm);
-  }, [selectedModule]);
+  }, [selectedModule, perPage]);
 
   // Manejar búsqueda con enter o submit
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    fetchLogs(1, selectedModule, searchTerm);
-  };
+  const [handleSearchSubmit, handleSearchSubmitPending] = useSingleSubmit(async (e) => {
+    await fetchLogs(1, selectedModule, searchTerm);
+  }, { form: true });
 
   // Copiar IP al portapapeles
   const handleCopyIp = (ip) => {
@@ -194,12 +200,12 @@ export default function Auditoria() {
   };
 
   // Contadores por categoría calculados de los registros cargados
-  const authLogsCount = logs.filter((l) => l.module === 'Autenticación').length;
-  const cobrosLogsCount = logs.filter((l) => l.module === 'Cobros').length;
-  const clientesLogsCount = logs.filter((l) => l.module === 'Clientes').length;
+  const authLogsCount = pagination.module_counts?.['Autenticación'] ?? 0;
+  const cobrosLogsCount = pagination.module_counts?.['Cobros'] ?? 0;
+  const clientesLogsCount = pagination.module_counts?.['Clientes'] ?? 0;
 
   // Manejador para Descargar Respaldo Completo de la Base de Datos (.sql)
-  const handleDownloadBackup = async () => {
+  const [handleDownloadBackup, handleDownloadBackupPending] = useSingleSubmit(async () => {
     setDownloadingBackup(true);
     setToastNotification(null);
     try {
@@ -236,6 +242,7 @@ export default function Auditoria() {
       // Refrescar registros de auditoría para reflejar la acción
       fetchLogs(1, selectedModule, searchTerm);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al descargar respaldo de base de datos:', err);
       let errMsg = 'Error al generar el respaldo de la base de datos.';
       if (err.response && err.response.data instanceof Blob) {
@@ -255,7 +262,7 @@ export default function Auditoria() {
       setDownloadingBackup(false);
       setTimeout(() => setToastNotification(null), 6000);
     }
-  };
+  });
 
   return (
     <div className="space-y-6 animate-fade-in w-full pb-8">
@@ -305,7 +312,7 @@ export default function Auditoria() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
+          <ActionButton loading={handleDownloadBackupPending}
             type="button"
             onClick={handleDownloadBackup}
             disabled={downloadingBackup}
@@ -318,7 +325,7 @@ export default function Auditoria() {
               <DatabaseBackup className="w-3.5 h-3.5 text-cyan-400" />
             )}
             <span>{downloadingBackup ? 'Generando Respaldo...' : 'Descargar Respaldo BD (.sql)'}</span>
-          </button>
+          </ActionButton>
 
           <button
             type="button"
@@ -390,19 +397,19 @@ export default function Auditoria() {
         {/* Buscador */}
         <form onSubmit={handleSearchSubmit} className="relative w-full md:w-96">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <input id="auditoria-search" name="auditoria_search"
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Buscar por usuario, acción o IP..."
             className="w-full pl-9 pr-20 py-2 text-xs sm:text-sm rounded-md border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-400 transition"
           />
-          <button
+          <ActionButton loading={handleSearchSubmitPending}
             type="submit"
             className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-medium cursor-pointer transition shadow-xs"
           >
             Filtrar
-          </button>
+          </ActionButton>
         </form>
 
         {/* Selector de Módulos */}
@@ -605,44 +612,7 @@ export default function Auditoria() {
           </table>
         </div>
 
-        {/* Paginación */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-          <div>
-            Mostrando registros del <span className="font-bold text-slate-700">{pagination.from}</span> al{' '}
-            <span className="font-bold text-slate-700">{pagination.to}</span> de un total de{' '}
-            <span className="font-bold text-slate-700">{pagination.total}</span> eventos
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={pagination.current_page <= 1 || loading}
-              onClick={() =>
-                fetchLogs(pagination.current_page - 1, selectedModule, searchTerm)
-              }
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-semibold text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Anterior</span>
-            </button>
-
-            <span className="font-bold text-slate-700 px-2">
-              Página {pagination.current_page} de {pagination.last_page || 1}
-            </span>
-
-            <button
-              type="button"
-              disabled={pagination.current_page >= pagination.last_page || loading}
-              onClick={() =>
-                fetchLogs(pagination.current_page + 1, selectedModule, searchTerm)
-              }
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-semibold text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
-            >
-              <span>Siguiente</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+        <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchLogs} onPerPageChange={setPerPage} loading={loading} />
       </div>
 
       {/* ================= MODAL DE DETALLE TÉCNICO RAW ================= */}

@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Lot;
 use App\Models\Payment;
+use App\Models\ReceiptSequence;
 use App\Models\User;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -41,6 +42,8 @@ class PaymentController extends Controller
             'voidedByUser:id,name'
         ]);
 
+        $this->scopeReceiptBook($query, $request);
+
         $requestedBook = $request->filled('receipt_book') && !in_array(strtoupper($request->input('receipt_book')), ['TODOS', 'ALL', ''])
             ? strtoupper($request->input('receipt_book'))
             : null;
@@ -50,33 +53,7 @@ class PaymentController extends Controller
             $query->where('receipt_book', $requestedBook);
         }
 
-        // Filtro estricto por proyecto asignado para el rol Administrador
-        // Regla: No restringir por lote/proyecto si se consulta explícitamente TOPOGRAFIA
-        $user = $request->user() ?: auth()->user();
-        $simulatedRole = $request->header('X-Simulate-Role') ?: $request->header('X-Simulated-Role') ?: $request->query('simulate_role');
-        $isAdminRole = ($user && $user->hasRole('Administrador') && !$user->hasRole('Super Admin') && $user->id !== 1)
-            || ($simulatedRole === 'Administrador');
-
-        if ($isAdminRole && $requestedBook !== 'TOPOGRAFIA') {
-            $effectiveAdmin = ($user && $user->hasRole('Administrador')) 
-                ? $user 
-                : (User::where('email', 'administrador1@vendeymas.com')->first() 
-                   ?: User::whereHas('assignedProjects')->first() 
-                   ?: User::role('Administrador')->first());
-
-            if ($effectiveAdmin) {
-                $assignedProjectIds = $effectiveAdmin->assignedProjects()->pluck('projects.id')->toArray();
-                $query->where(function ($q) use ($assignedProjectIds) {
-                    $q->where(function ($sub) use ($assignedProjectIds) {
-                        $sub->whereHas('lot', fn($l) => $l->whereIn('project_id', $assignedProjectIds))
-                            ->orWhereHas('deed', fn($d) => $d->whereIn('project_id', $assignedProjectIds));
-                    })->orWhere(function ($sub) {
-                        $sub->where('receipt_book', 'TOPOGRAFIA')
-                            ->orWhereNotNull('topography_job_id');
-                    });
-                });
-            }
-        }
+        $this->scopeAdminProjects($query, $request, $requestedBook);
 
         // Filtro por rango de fechas (start_date, end_date)
         if ($request->filled('start_date')) {
@@ -170,6 +147,58 @@ class PaymentController extends Controller
         return $query;
     }
 
+    private function scopeAdminProjects($query, Request $request, ?string $requestedBook = null): void
+    {
+        // Filtro estricto por proyecto asignado para el rol Administrador
+        // Regla: No restringir por lote/proyecto si se consulta explícitamente TOPOGRAFIA
+        $user = $request->user() ?: auth()->user();
+        $simulatedRole = $request->header('X-Simulate-Role') ?: $request->header('X-Simulated-Role') ?: $request->query('simulate_role');
+        $isAdminRole = ($user && $user->hasRole('Administrador') && !$user->hasRole('Super Admin') && $user->id !== 1)
+            || ($simulatedRole === 'Administrador');
+
+        if ($isAdminRole && $requestedBook !== 'TOPOGRAFIA') {
+            $effectiveAdmin = ($user && $user->hasRole('Administrador'))
+                ? $user
+                : (User::where('email', 'administrador1@vendeymas.com')->first()
+                   ?: User::whereHas('assignedProjects')->first()
+                   ?: User::role('Administrador')->first());
+
+            if ($effectiveAdmin) {
+                $assignedProjectIds = $effectiveAdmin->assignedProjects()->pluck('projects.id')->toArray();
+                $query->where(function ($q) use ($assignedProjectIds) {
+                    $q->where(function ($sub) use ($assignedProjectIds) {
+                        $sub->whereHas('lot', fn($l) => $l->whereIn('project_id', $assignedProjectIds))
+                            ->orWhereHas('deed', fn($d) => $d->whereIn('project_id', $assignedProjectIds));
+                    })->orWhere(function ($sub) {
+                        $sub->where('receipt_book', 'TOPOGRAFIA')
+                            ->orWhereNotNull('topography_job_id');
+                    });
+                });
+            }
+        }
+    }
+
+    private static function receiptBookForRole(?string $role): ?string
+    {
+        return match ($role) {
+            'Super Admin' => 'GERENCIA',
+            'Administrador' => 'ADMINISTRACION',
+            'Asesor Comercial' => 'ASESORIA',
+            'Topógrafo', 'Topografo' => 'TOPOGRAFIA',
+            default => null,
+        };
+    }
+
+    private function scopeReceiptBook($query, Request $request): void
+    {
+        $user = $request->user();
+        if (!$user->hasRole('Super Admin')) {
+            $book = self::receiptBookForRole($user->roles->first()?->name);
+            abort_if($book === null, 403);
+            $query->where('receipt_book', $book);
+        }
+    }
+
     /**
      * Calcula los totales de cierre y arqueo de caja del periodo/filtros seleccionados.
      */
@@ -243,7 +272,7 @@ class PaymentController extends Controller
             $tableQuery->where('status', $request->input('status'));
         }
 
-        $paginated = $tableQuery->orderBy('created_at', 'desc')->paginate(50);
+        $paginated = $tableQuery->latest('created_at')->latest('id')->paginate($this->perPage($request))->withQueryString();
 
         // Formatear cada registro para el frontend
         $paginated->getCollection()->transform(function ($payment) {
@@ -433,46 +462,18 @@ class PaymentController extends Controller
         if ($requestedBook && in_array(strtoupper($requestedBook), ['GERENCIA', 'ADMINISTRACION', 'ASESORIA', 'TOPOGRAFIA'])) {
             $book = strtoupper($requestedBook);
         } else {
-            if ($user && ($user->hasRole('Super Admin') || $user->id === 1)) {
-                $book = 'GERENCIA';
-            } elseif ($user && $user->hasRole('Administrador')) {
-                $book = 'ADMINISTRACION';
-            } elseif ($user && $user->hasRole('Topógrafo')) {
-                $book = 'TOPOGRAFIA';
-            } else {
-                $book = 'ASESORIA';
-            }
+            $role = $user?->hasRole('Super Admin') ? 'Super Admin' : $user?->roles->first()?->name;
+            $book = self::receiptBookForRole($role) ?? 'ASESORIA';
         }
 
-        $prefix = match ($book) {
-            'GERENCIA' => 'GER',
-            'ADMINISTRACION' => 'ADM',
-            'TOPOGRAFIA' => 'TOP',
-            default => 'ASE',
-        };
-
-        // Numeración correlativa estricta con bloqueo de fila para evitar duplicados
-        // en cobros simultáneos desde múltiples tablets/dispositivos.
-        $lastPayment = Payment::where('receipt_code', 'like', $prefix . '-%')
-            ->orderBy('id', 'desc')
-            ->lockForUpdate()
-            ->first();
-
-        $nextNumber = 1;
-        if ($lastPayment && $lastPayment->receipt_code) {
-            $stripped = str_replace($prefix . '-', '', $lastPayment->receipt_code);
-            $lastNumber = (int) $stripped;
-            if ($lastNumber > 0) {
-                $nextNumber = $lastNumber + 1;
-            }
-        }
-
-        $receiptCode = $prefix . '-' . str_pad($nextNumber, 5, '0', STR_PAD_LEFT);
+        $sequence = ReceiptSequence::where('prefix', ReceiptSequence::PREFIXES[$book])
+            ->lockForUpdate()->firstOrFail();
+        $nextNumber = max($sequence->last_manual_number, $sequence->maxDigitalNumber()) + 1;
 
         return [
             'receipt_book' => $book,
             'book_sequence' => $nextNumber,
-            'receipt_code' => $receiptCode,
+            'receipt_code' => $sequence->formatNumber($nextNumber),
         ];
     }
 
@@ -524,6 +525,13 @@ class PaymentController extends Controller
             'bank_reference.max' => 'El número de comprobante no puede superar los 100 caracteres.',
         ]);
 
+        $actor = $request->user();
+        if (!$actor->hasRole('Super Admin')) {
+            $book = self::receiptBookForRole($actor->roles->first()?->name);
+            abort_if($book === null || (isset($validated['receipt_book']) && $validated['receipt_book'] !== $book), 403);
+            $validated['receipt_book'] = $book;
+        }
+
         // Sanitización contra etiquetas HTML y scripts
         if (!empty($validated['concept_detail'])) {
             $validated['concept_detail'] = strip_tags($validated['concept_detail']);
@@ -535,119 +543,99 @@ class PaymentController extends Controller
             $validated['client_phone'] = strip_tags($validated['client_phone']);
         }
 
-        // Si es cobro directo de topografía con cliente libre sin ID previo de trabajo
-        if (empty($validated['topography_job_id']) && ($validated['receipt_book'] ?? '') === 'TOPOGRAFIA' && !empty($validated['client_name'])) {
-            $newJob = \App\Models\TopographyJob::create([
-                'client_name' => $validated['client_name'],
-                'client_phone' => $validated['client_phone'] ?? null,
-                'service_type' => $validated['concept_detail'] ?: 'Servicio Topográfico',
-                'location' => 'Sucúa / Morona Santiago',
-                'cost' => (float) $validated['amount_paid'],
-                'amount_paid' => 0,
-                'status' => 'Pendiente',
-                'notes' => 'Cobro Directo en Recibera TOP',
-            ]);
-            $validated['topography_job_id'] = $newJob->id;
-        }
-
         $emitter = RoleSecurity::resolveEffectiveUser($request);
         $user = $emitter;
         $effectiveUserId = $emitter->id;
 
-        $nuevoSaldoDeudor = 0;
         $contextAudit = 'Cobro General';
-
-        if (!empty($validated['lot_id'])) {
-            $lot = Lot::with(['customer', 'project'])->findOrFail($validated['lot_id']);
-
-            // Validar que el lote pertenece al cliente si se envía customer_id desde el frontend
-            if ($request->filled('customer_id') && $lot->customer_id && (int)$lot->customer_id !== (int)$request->input('customer_id')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'El lote seleccionado no pertenece al cliente indicado. Verifique la selección.',
-                ], 422);
-            }
-
-            $pagosPrevios = (float) $lot->payments()->where('status', 'Válido')->sum('amount_paid');
-            $saldoAnterior = max(0, (float) $lot->total_price - $pagosPrevios);
-            $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
-            if ($nuevoSaldoDeudor == 0) {
-                $lot->update(['status' => 'Pagado / Vendido']);
-            }
-            $contextAudit = "Lote {$lot->lot_number} - {$lot->project?->name}";
-        } elseif (!empty($validated['deed_id'])) {
-            $deed = \App\Models\Deed::with(['customer', 'project'])->findOrFail($validated['deed_id']);
-            $pagosPrevios = (float) $deed->payments()->where('status', 'Válido')->sum('amount_paid');
-            $saldoAnterior = max(0, (float) $deed->total_budget - $pagosPrevios);
-            $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
-            $contextAudit = "Escritura #{$deed->id} (Etapa: {$deed->stage}) - {$deed->customer?->name}";
-        } elseif (!empty($validated['topography_job_id'])) {
-            $job = \App\Models\TopographyJob::findOrFail($validated['topography_job_id']);
-            $pagosPrevios = (float) $job->payments()->where('status', 'Válido')->sum('amount_paid');
-            $saldoAnterior = max(0, (float) $job->cost - $pagosPrevios);
-            $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
-            $job->increment('amount_paid', (float) $validated['amount_paid']);
-            if ($nuevoSaldoDeudor == 0) {
-                $job->update(['status' => 'Completado']);
-            }
-            $contextAudit = "Topografía #{$job->id} ({$job->service_type}) - {$job->client_name}";
-        }
 
         $defaultSignature = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
         $signature = !empty($validated['signature_base64']) ? $validated['signature_base64'] : $defaultSignature;
 
-        $payment = DB::transaction(function () use ($validated, $effectiveUserId, $nuevoSaldoDeudor, $signature, $user, $request) {
-            $bookInfo = self::generateReceiptBookAndCode($user, $validated['receipt_book'] ?? null);
-            return Payment::create([
-                'lot_id' => $validated['lot_id'] ?? null,
-                'deed_id' => $validated['deed_id'] ?? null,
-                'topography_job_id' => $validated['topography_job_id'] ?? null,
-                'user_id' => $effectiveUserId,
-                'receipt_book' => $bookInfo['receipt_book'],
-                'book_sequence' => $bookInfo['book_sequence'],
-                'receipt_code' => $bookInfo['receipt_code'],
-                'concept_detail' => $validated['concept_detail'] ?? null,
-                'amount_paid' => $validated['amount_paid'],
-                'status' => 'Válido',
-                'debt_balance' => $nuevoSaldoDeudor,
-                'payment_method' => $validated['payment_method'],
-                'bank_reference' => !empty($validated['bank_reference']) ? trim((string) $validated['bank_reference']) : ($request->filled('bank_reference') ? trim((string) $request->input('bank_reference')) : null),
-                'signature_base64' => $signature,
-                'customer_signature' => !empty($validated['customer_signature']) ? $validated['customer_signature'] : null,
-            ]);
-        });
+        $archivePath = null;
+        try {
+            $payment = DB::transaction(function () use ($validated, $effectiveUserId, &$contextAudit, $signature, $user, $request, &$archivePath) {
+                // Si es cobro directo de topografía con cliente libre sin ID previo de trabajo
+                if (empty($validated['topography_job_id']) && ($validated['receipt_book'] ?? '') === 'TOPOGRAFIA' && !empty($validated['client_name'])) {
+                    $newJob = \App\Models\TopographyJob::create([
+                        'client_name' => $validated['client_name'],
+                        'client_phone' => $validated['client_phone'] ?? null,
+                        'service_type' => ($validated['concept_detail'] ?? null) ?: 'Servicio Topográfico',
+                        'location' => 'Sucúa / Morona Santiago',
+                        'cost' => (float) $validated['amount_paid'],
+                        'amount_paid' => 0,
+                        'status' => 'Pendiente',
+                        'notes' => 'Cobro Directo en Recibera TOP',
+                    ]);
+                    $validated['topography_job_id'] = $newJob->id;
+                }
+
+                $nuevoSaldoDeudor = 0;
+
+                if (!empty($validated['lot_id'])) {
+                    $lot = Lot::with(['customer', 'project'])->lockForUpdate()->findOrFail($validated['lot_id']);
+
+                    // Validar que el lote pertenece al cliente si se envía customer_id desde el frontend
+                    if ($request->filled('customer_id') && $lot->customer_id && (int)$lot->customer_id !== (int)$request->input('customer_id')) {
+                        abort(422, 'El lote seleccionado no pertenece al cliente indicado. Verifique la selección.');
+                    }
+
+                    $pagosPrevios = (float) $lot->payments()->where('status', 'Válido')->sum('amount_paid');
+                    $saldoAnterior = max(0, (float) $lot->total_price - $pagosPrevios);
+                    $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
+                    if ($nuevoSaldoDeudor == 0) {
+                        $lot->update(['status' => 'Pagado / Vendido']);
+                    }
+                    $contextAudit = "Lote {$lot->lot_number} - {$lot->project?->name}";
+                } elseif (!empty($validated['deed_id'])) {
+                    $deed = \App\Models\Deed::with(['customer', 'project'])->lockForUpdate()->findOrFail($validated['deed_id']);
+                    $pagosPrevios = (float) $deed->payments()->where('status', 'Válido')->sum('amount_paid');
+                    $saldoAnterior = max(0, (float) $deed->total_budget - $pagosPrevios);
+                    $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
+                    $contextAudit = "Escritura #{$deed->id} (Etapa: {$deed->stage}) - {$deed->customer?->name}";
+                } elseif (!empty($validated['topography_job_id'])) {
+                    $job = \App\Models\TopographyJob::lockForUpdate()->findOrFail($validated['topography_job_id']);
+                    $pagosPrevios = (float) $job->payments()->where('status', 'Válido')->sum('amount_paid');
+                    $saldoAnterior = max(0, (float) $job->cost - $pagosPrevios);
+                    $nuevoSaldoDeudor = max(0, $saldoAnterior - (float) $validated['amount_paid']);
+                    $job->increment('amount_paid', (float) $validated['amount_paid']);
+                    if ($nuevoSaldoDeudor == 0) {
+                        $job->update(['status' => 'Completado']);
+                    }
+                    $contextAudit = "Topografía #{$job->id} ({$job->service_type}) - {$job->client_name}";
+                }
+
+                $bookInfo = self::generateReceiptBookAndCode($user, $validated['receipt_book'] ?? null);
+                $payment = Payment::create([
+                    'lot_id' => $validated['lot_id'] ?? null,
+                    'deed_id' => $validated['deed_id'] ?? null,
+                    'topography_job_id' => $validated['topography_job_id'] ?? null,
+                    'user_id' => $effectiveUserId,
+                    'receipt_book' => $bookInfo['receipt_book'],
+                    'book_sequence' => $bookInfo['book_sequence'],
+                    'receipt_code' => $bookInfo['receipt_code'],
+                    'concept_detail' => $validated['concept_detail'] ?? null,
+                    'amount_paid' => $validated['amount_paid'],
+                    'status' => 'Válido',
+                    'debt_balance' => $nuevoSaldoDeudor,
+                    'payment_method' => $validated['payment_method'],
+                    'bank_reference' => !empty($validated['bank_reference']) ? trim((string) $validated['bank_reference']) : ($request->filled('bank_reference') ? trim((string) $request->input('bank_reference')) : null),
+                    'signature_base64' => $signature,
+                    'customer_signature' => !empty($validated['customer_signature']) ? $validated['customer_signature'] : null,
+                ]);
+                $archivePath = $this->generateAndStoreReceiptPdf($payment);
+
+                return $payment;
+            });
+        } catch (\Throwable $error) {
+            if ($archivePath !== null) {
+                Storage::disk('public')->delete($archivePath);
+            }
+            throw $error;
+        }
 
         // Invalidar caché de mora para que se recalcule ante este nuevo pago
         Cache::forget('system_mora_count');
-
-        // Generar y almacenar el PDF
-        try {
-            $payment->load([
-                'lot.customer',
-                'lot.project',
-                'deed.customer',
-                'deed.project',
-                'topographyJob',
-                'cashier.roles',
-            ]);
-            $pdf = Pdf::loadView('receipt', compact('payment'))
-                ->setOptions([
-                    'isHtml5ParserEnabled' => true,
-                    'isRemoteEnabled' => true,
-                ]);
-
-            Storage::disk('public')->makeDirectory('receipts');
-            $fileName = 'receipts/recibo_' . $payment->id . '_' . time() . '.pdf';
-
-            Storage::disk('public')->put($fileName, $pdf->output());
-            $receiptUrl = url('/api/payments/' . $payment->id . '/pdf');
-
-            $payment->update([
-                'receipt_pdf_url' => $receiptUrl,
-            ]);
-        } catch (\Throwable $e) {
-            $receiptUrl = url('/api/payments/' . $payment->id . '/pdf');
-        }
 
         // Disparo automático de notificación en tiempo real para el CEO
         try {
@@ -817,6 +805,9 @@ class PaymentController extends Controller
             ], 422);
         }
 
+        // Archive a legacy original before changing its status.
+        $this->receiptArchivePath($payment);
+
         // 3. Cambiar estado a 'Anulado', registrar motivo, fecha y autor
         $payment->update([
             'status' => 'Anulado',
@@ -838,30 +829,6 @@ class PaymentController extends Controller
             }
         }
 
-        // 5. Regenerar el PDF para plasmar el sello de ANULADO
-        try {
-            $payment->load([
-                'lot.customer',
-                'lot.project',
-                'deed.customer',
-                'deed.project',
-                'topographyJob',
-                'voidedByUser',
-                'cashier.roles',
-            ]);
-            $pdf = Pdf::loadView('receipt', compact('payment'))
-                ->setOptions([
-                    'isHtml5ParserEnabled' => true,
-                    'isRemoteEnabled' => true,
-                ]);
-
-            Storage::disk('public')->makeDirectory('receipts');
-            $fileName = 'receipts/recibo_' . $payment->id . '_' . time() . '.pdf';
-            Storage::disk('public')->put($fileName, $pdf->output());
-        } catch (\Throwable $e) {
-            // Regeneración silenciosa de archivo en disco
-        }
-
         // 6. Registrar en Auditoría del Sistema
         $receiptCode = $payment->receipt_code ?: ('REC-' . str_pad($payment->id, 5, '0', STR_PAD_LEFT));
         $montoRevertido = number_format((float) $payment->amount_paid, 2);
@@ -880,25 +847,138 @@ class PaymentController extends Controller
         ]);
     }
 
-    public function downloadPdf(int|string $id)
+    public function downloadPdf(Request $request, int $id)
     {
-        $payment = Payment::with([
-            'lot.customer',
-            'lot.project',
-            'deed',
-            'deed.customer',
-            'deed.project',
-            'topographyJob',
-            'voidedByUser',
-            'cashier.roles',
-        ])->findOrFail($id);
+        $payment = Payment::with(['lot.customer', 'deed.customer', 'topographyJob'])->find($id);
+        if (!$payment) {
+            return response()->json(['message' => 'Comprobante no encontrado'], 404);
+        }
 
-        $pdf = Pdf::loadView('receipt', compact('payment'))
-            ->setOptions([
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => true,
+        abort_unless($this->canReadReceipt($request->user(), $payment), 403, 'No tienes permiso para consultar este comprobante.');
+
+        $path = $this->receiptArchivePath($payment);
+        $filename = $this->receiptFilename($payment);
+        if ($payment->status === 'Anulado') {
+            $filename = pathinfo($filename, PATHINFO_FILENAME).'-ANULADO.pdf';
+        }
+
+        return Storage::disk('public')->response($path, $filename, [
+            'Content-Type' => 'application/pdf',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
+    private function canReadReceipt(User $user, Payment $payment): bool
+    {
+        if ($user->hasRole('Super Admin') || $user->id === $payment->user_id) {
+            return true;
+        }
+
+        if ($user->hasRole('Administrador')) {
+            $projectIds = array_filter([
+                $payment->lot?->project_id,
+                $payment->deed?->project_id,
+                $payment->topographyJob?->project_id,
             ]);
+            return $user->assignedProjects()->whereKey($projectIds)->exists();
+        }
 
-        return $pdf->stream('Recibo.pdf');
+        return $user->hasRole('Asesor Comercial') && (
+            $payment->lot?->customer?->assigned_user_id === $user->id
+            || $payment->deed?->customer?->assigned_user_id === $user->id
+        );
+    }
+
+    private function receiptArchivePath(Payment $payment): string
+    {
+        $disk = Storage::disk('public');
+        if ($payment->status !== 'Anulado' && $payment->pdf_path && $disk->exists($payment->pdf_path)) {
+            return $payment->pdf_path;
+        }
+
+        return DB::transaction(function () use ($payment, $disk) {
+            $locked = Payment::lockForUpdate()->findOrFail($payment->id);
+            $path = $locked->pdf_path;
+            if (!$path || !$disk->exists($path)) {
+                $path = $this->generateAndStoreReceiptPdf($locked);
+            }
+
+            if ($locked->status === 'Anulado') {
+                // The stamped copy stays separate from the original emission.
+                $path = substr($path, 0, -4).'-ANULADO.pdf';
+                if (!$disk->exists($path)) {
+                    $this->writeReceiptPdf($locked, $path);
+                }
+            }
+
+            return $path;
+        });
+    }
+
+    private function generateAndStoreReceiptPdf(Payment $payment): string
+    {
+        $disk = Storage::disk('public');
+        $directory = 'recibos/'.($payment->created_at ?? now())->format('Y/m');
+        $filename = $this->receiptFilename($payment);
+        $path = $payment->pdf_path ?? $directory.'/'.$filename;
+        if ($disk->exists($path)) {
+            $path = $directory.'/'.pathinfo($filename, PATHINFO_FILENAME).'-'.$payment->id.'.pdf';
+            if ($disk->exists($path)) {
+                throw new \RuntimeException('El archivo de este comprobante ya existe.');
+            }
+        }
+
+        // Preserve the first PDF emitted by older versions, including its original signatures.
+        $legacyFiles = glob($disk->path("receipts/recibo_{$payment->id}_*.pdf")) ?: [];
+        usort($legacyFiles, 'strnatcmp');
+        $legacy = $legacyFiles ? 'receipts/'.basename($legacyFiles[0]) : null;
+        if ($legacy && $disk->size($legacy) > 0) {
+            $saved = $disk->copy($legacy, $path);
+            $generatedAt = Carbon::createFromTimestamp($disk->lastModified($legacy));
+        } else {
+            $this->writeReceiptPdf($payment, $path);
+            $saved = true;
+            $generatedAt = now();
+        }
+
+        if (!$saved) {
+            throw new \RuntimeException('No se pudo archivar el PDF del comprobante.');
+        }
+
+        try {
+            $payment->update([
+                'pdf_path' => $path,
+                'pdf_generated_at' => $generatedAt,
+                'receipt_pdf_url' => url("/api/payments/{$payment->id}/pdf"),
+            ]);
+        } catch (\Throwable $error) {
+            $disk->delete($path);
+            throw $error;
+        }
+
+        return $path;
+    }
+
+    private function writeReceiptPdf(Payment $payment, string $path): void
+    {
+        $payment->loadMissing([
+            'lot.customer', 'lot.project', 'deed.customer', 'deed.project',
+            'topographyJob', 'voidedByUser', 'cashier.roles',
+        ]);
+        $pdf = Pdf::loadView('receipt', compact('payment'));
+
+        if (!Storage::disk('public')->put($path, $pdf->output())) {
+            throw new \RuntimeException('No se pudo guardar el PDF del comprobante.');
+        }
+    }
+
+    private function receiptFilename(Payment $payment): string
+    {
+        $code = $payment->receipt_code;
+        if (!$code || !preg_match('/^[A-Za-z0-9_-]+$/D', $code)) {
+            $code = sprintf('REC-%05d', $payment->id);
+        }
+
+        return $code.'.pdf';
     }
 }

@@ -1,7 +1,9 @@
+import { receiptPdfUrl } from '../utils/receiptPdfUrl';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
-import SignatureCanvas from 'react-signature-canvas';
 import {
   ArrowLeft,
   LayoutGrid,
@@ -31,6 +33,7 @@ import {
   UploadCloud,
   Paperclip,
   Trash2,
+  Pencil,
   ExternalLink,
   FileCheck2,
   FolderArchive,
@@ -43,9 +46,13 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import AmortizationModal from '../components/AmortizationModal';
+import InventoryDialog from '../components/InventoryDialog';
+import { useAuth } from '../context/AuthContext';
 
 export default function ProyectoClientes({ defaultTab = 'lotes' }) {
   const { id } = useParams();
+  const { user } = useAuth();
+  const [inventoryAction, setInventoryAction] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -119,14 +126,13 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
   // Formulario de emisión de recibo
   const [selectedLotId, setSelectedLotId] = useState('');
-  const [monto, setMonto] = useState('');
-  const [metodoPago, setMetodoPago] = useState('Transferencia');
-  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
-  const [mensajeExito, setMensajeExito] = useState(null);
 
   // Rol del usuario activo
   const [userRole, setUserRole] = useState(() => localStorage.getItem('user_role') || 'Super Admin');
   const isSuperAdmin = userRole === 'Super Admin';
+  const isRealSuperAdmin = user?.id === 1 || user?.roles?.some((role) => role.name === 'Super Admin');
+  const canDeleteProject = isSuperAdmin && isRealSuperAdmin;
+  const canEditInventory = isRealSuperAdmin || user?.roles?.some((role) => role.name === 'Administrador');
 
   useEffect(() => {
     const handleAuthChange = () => {
@@ -151,7 +157,6 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
   const [amortizationModalOpen, setAmortizationModalOpen] = useState(false);
   const [amortizationLotId, setAmortizationLotId] = useState(null);
 
-  const sigCanvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
   // Sincronizar activeTab cuando cambie la URL del navegador
@@ -215,7 +220,6 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
           setSelectedLotId(primer.lots[0].id);
           setDocLotId(primer.lots[0].id);
         }
-        setMonto(primer.cuotaSugerida || primer.cuotaMensual || 1000);
       } else {
         setSelectedCliente(null);
       }
@@ -228,7 +232,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
   const fetchAllCustomers = async () => {
     try {
-      const res = await axios.get('/api/customers?page=1');
+      const res = await axios.get('/api/customers/options');
       setAllCustomers(res.data.data || []);
       if (res.data.data && res.data.data.length > 0) {
         setSelectedCustomerForAssign(String(res.data.data[0].id));
@@ -271,8 +275,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
   // ==========================================================
   // ACCIONES DE LOTES
   // ==========================================================
-  const handleGuardarNuevoLote = async (e) => {
-    e.preventDefault();
+  const [handleGuardarNuevoLote, handleGuardarNuevoLotePending] = useSingleSubmit(async (e) => {
     if (!newLotForm.lot_number.trim()) return;
 
     setIsSubmittingLot(true);
@@ -289,13 +292,14 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       setNewLotForm({ lot_number: '', area_m2: '200', total_price: '25000' });
       fetchLotes();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar lote:', err);
       setToastMessage('Error al registrar el lote en el sistema.');
     } finally {
       setIsSubmittingLot(false);
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  }, { form: true });
 
   const handleOpenAssignModal = (lote) => {
     setSelectedLotForAssign(lote);
@@ -318,7 +322,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
     setNewCustomerData({ name: '', id_card: '', phone: '', email: '' });
   };
 
-  const handleSaveNewCustomer = async () => {
+  const [handleSaveNewCustomer, handleSaveNewCustomerPending] = useSingleSubmit(async () => {
     if (!newCustomerData.name.trim()) {
       alert('Por favor ingrese el nombre completo del cliente.');
       return null;
@@ -348,6 +352,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
         return created;
       }
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al registrar nuevo cliente:', err);
       const msg = err.response?.data?.message || 'Error al registrar el nuevo cliente.';
       alert(msg);
@@ -355,10 +360,9 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
     } finally {
       setIsSavingNewCustomer(false);
     }
-  };
+  });
 
-  const handleAssignSubmit = async (e) => {
-    e.preventDefault();
+  const [handleAssignSubmit, handleAssignSubmitPending] = useSingleSubmit(async (e) => {
     if (!selectedLotForAssign) return;
 
     let targetCustomerId = selectedCustomerForAssign;
@@ -406,6 +410,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       fetchProyectoClientes();
       fetchAllCustomers();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al asignar cliente a lote:', err);
       const msg = err.response?.data?.message || 'Error al asignar el cliente al lote.';
       setToastMessage(msg);
@@ -413,7 +418,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       setIsSubmittingAssign(false);
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  }, { form: true });
 
   const handleIrACobrar = (lote) => {
     navigate(`/proyectos/${id}/clientes/pagar?lot_id=${lote.id}&customer_id=${lote.customer?.id || ''}`);
@@ -431,8 +436,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
     setIsUploadDocModalOpen(true);
   };
 
-  const handleUploadDocumentSubmit = async (e) => {
-    e.preventDefault();
+  const [handleUploadDocumentSubmit, handleUploadDocumentSubmitPending] = useSingleSubmit(async (e) => {
     if (!docFile || !docLotId || !selectedCliente) {
       alert('Por favor selecciona un lote y adjunta un archivo PDF o imagen.');
       return;
@@ -459,15 +463,16 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       fetchCustomerDocuments(selectedCliente.id);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al subir documento:', err);
       alert('Error al subir el archivo al servidor. Verifica el formato y tamaño (máx 10MB).');
     } finally {
       setIsSubmittingDoc(false);
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  }, { form: true });
 
-  const handleDeleteDocument = async (docId, fileName) => {
+  const [handleDeleteDocument, handleDeleteDocumentPending] = useSingleSubmit(async (docId, fileName) => {
     if (!window.confirm(`¿Estás seguro de eliminar el documento "${fileName}"? Esta acción no se puede deshacer.`)) {
       return;
     }
@@ -479,12 +484,13 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
         fetchCustomerDocuments(selectedCliente.id);
       }
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al eliminar documento:', err);
       alert('Error al eliminar el documento en el backend.');
     } finally {
       setTimeout(() => setToastMessage(null), 4500);
     }
-  };
+  });
 
   // ==========================================================
   // ACCIONES DE COBROS Y RECIBOS
@@ -495,60 +501,8 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       setSelectedLotId(cliente.lots[0].id);
       setDocLotId(cliente.lots[0].id);
     }
-    setMonto(cliente.cuotaSugerida || cliente.cuotaMensual || (cliente.saldoDeudor > 0 ? Math.min(cliente.saldoDeudor, 2000) : ''));
-    setMensajeExito(null);
-    if (sigCanvasRef.current) {
-      sigCanvasRef.current.clear();
-    }
   };
 
-  const handleEmitirRecibo = async (e) => {
-    e.preventDefault();
-    if (!selectedCliente || !selectedLotId || !monto) return;
-
-    let firmaData = null;
-    if (sigCanvasRef.current && !sigCanvasRef.current.isEmpty()) {
-      firmaData = sigCanvasRef.current.toDataURL('image/png');
-    }
-
-    setIsSubmittingPayment(true);
-    try {
-      const res = await axios.post('/api/payments', {
-        lot_id: selectedLotId,
-        amount_paid: Number(monto),
-        payment_method: metodoPago,
-        signature_base64: firmaData,
-      });
-
-      const paymentData = res.data.data;
-      const receiptUrl = res.data.receipt_url;
-
-      setMensajeExito({
-        monto: Number(monto).toLocaleString('en-US', { minimumFractionDigits: 2 }),
-        cliente: selectedCliente.nombre,
-        metodo: metodoPago,
-        reciboNum: 'REC-' + String(paymentData.id).padStart(5, '0'),
-        receiptUrl: receiptUrl ? receiptUrl.replace(/https?:\/\/[^\/]+/, `http://${window.location.hostname}:8000`) : receiptUrl,
-      });
-
-      if (sigCanvasRef.current) {
-        sigCanvasRef.current.clear();
-      }
-
-      await fetchProyectoClientes();
-      await fetchLotes();
-      window.dispatchEvent(new Event('notifications-updated'));
-    } catch (err) {
-      console.error('Error al registrar pago en backend:', err);
-      alert('Error al procesar el pago.');
-    } finally {
-      setIsSubmittingPayment(false);
-    }
-  };
-
-  // ==========================================================
-  // ANULACIÓN CONTROLADA DE RECIBOS (SUPER ADMIN)
-  // ==========================================================
   const handleOpenVoidModal = (payment) => {
     setSelectedPaymentForVoid(payment);
     setVoidReason('');
@@ -556,8 +510,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
     setIsVoidModalOpen(true);
   };
 
-  const handleConfirmVoidPayment = async (e) => {
-    e.preventDefault();
+  const [handleConfirmVoidPayment, handleConfirmVoidPaymentPending] = useSingleSubmit(async (e) => {
     if (!voidReason.trim() || voidReason.trim().length < 5) {
       setVoidError('El motivo de anulación es obligatorio y debe tener al menos 5 caracteres.');
       return;
@@ -566,9 +519,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
     setIsSubmittingVoid(true);
     setVoidError(null);
     try {
-      const paymentId =
-        selectedPaymentForVoid.payment_id ||
-        String(selectedPaymentForVoid.id).replace('REC-', '');
+      const paymentId = selectedPaymentForVoid.payment_id;
 
       const res = await axios.post(`/api/payments/${paymentId}/void`, {
         reason: voidReason.trim(),
@@ -581,8 +532,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
       await fetchProyectoClientes();
       await fetchLotes();
+      window.dispatchEvent(new Event('paymentUpdated'));
       window.dispatchEvent(new Event('notifications-updated'));
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al anular comprobante:', err);
       const msg = err.response?.data?.message || 'Error al procesar la anulación del comprobante.';
       setVoidError(msg);
@@ -591,7 +544,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       setIsSubmittingVoid(false);
       setTimeout(() => setToastMessage(null), 5000);
     }
-  };
+  }, { form: true });
 
   // Filtrado de lotes en tiempo real
   const filteredLotes = lotes.filter((lote) => {
@@ -662,7 +615,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
         {/* Selector de Pestañas con actualización de URL */}
         <div className="flex flex-wrap items-center gap-3">
-          <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/80">
+          <div className="flex max-w-full flex-wrap gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200/80">
             <button
               type="button"
               onClick={() => handleTabChange('lotes')}
@@ -696,7 +649,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
             <button
               type="button"
               onClick={() => navigate(`/proyectos/${id}/clientes/pagar`)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition cursor-pointer shadow-xs ml-1"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition cursor-pointer shadow-xs min-h-[46px]"
             >
               <CreditCard className="w-3.5 h-3.5" />
               <span>Ir a Cobrar</span>
@@ -707,6 +660,11 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
             <Building2 className="w-3.5 h-3.5 text-cyan-600" />
             <span>{projectInfo?.location || 'Ubicación Principal'}</span>
           </div>
+          {projectInfo?.id && canDeleteProject && (
+            <button type="button" onClick={() => setInventoryAction({ type: 'delete' })} className="inline-flex min-h-[42px] items-center gap-2 rounded-md bg-rose-50 px-3 text-xs font-bold text-rose-800 hover:bg-rose-100">
+              <Trash2 className="h-4 w-4" /> Eliminar Proyecto
+            </button>
+          )}
         </div>
       </div>
 
@@ -797,7 +755,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
           <div className="bg-white p-3 sm:p-3.5 rounded-lg border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
+              <input id="cartera-lot-search" name="cartera_lot_search"
                 type="text"
                 value={lotSearchTerm}
                 onChange={(e) => setLotSearchTerm(e.target.value)}
@@ -806,7 +764,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
               />
             </div>
 
-            <div className="flex items-center justify-between w-full sm:w-auto gap-3">
+            <div className="flex items-center justify-between w-full sm:w-auto flex-wrap gap-2">
               <span className="text-xs text-slate-500 font-medium">
                 {filteredLotes.length} lotes encontrados
               </span>
@@ -819,6 +777,11 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 <Plus className="w-3.5 h-3.5" />
                 <span>Agregar Lote</span>
               </button>
+              {projectInfo?.id && canEditInventory && (
+                <button type="button" onClick={() => setInventoryAction({ type: 'bulk' })} className="inline-flex min-h-[42px] items-center gap-2 rounded-md border border-slate-300 px-3 text-xs font-semibold">
+                  <Pencil className="h-3.5 w-3.5" /> Editar por Rango
+                </button>
+              )}
             </div>
           </div>
 
@@ -888,6 +851,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                         <span className="text-sm font-bold text-slate-900">
                           {lote.lot_number}
                         </span>
+                        <div className="flex flex-wrap items-center justify-end gap-1">
                         <span
                           className={`px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wider ${isDisponible
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
@@ -896,6 +860,12 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                         >
                           {isDisponible ? 'Disponible' : 'Vendido'}
                         </span>
+                          {canEditInventory && (
+                            <button type="button" title="Editar lote" aria-label={`Editar ${lote.lot_number}`} onClick={() => setInventoryAction({ type: 'edit', lot: lote })} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-600 hover:bg-slate-200">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {/* Detalles */}
@@ -962,46 +932,12 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       {/* ========================================================================= */}
       {activeTab === 'cobros' && (
         <div className="flex-1 flex flex-col space-y-4 animate-fade-in">
-          {mensajeExito && (
-            <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-4 rounded-xl flex items-center justify-between shadow-sm animate-fade-in">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
-                <div>
-                  <p className="text-sm font-bold">
-                    ¡Recibo {mensajeExito.reciboNum} emitido con éxito!
-                  </p>
-                  <p className="text-xs text-emerald-700">
-                    Se registró el abono de ${mensajeExito.monto} ({mensajeExito.metodo}) para {mensajeExito.cliente}.
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {mensajeExito.receiptUrl && (
-                  <a
-                    href={mensajeExito.receiptUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Ver PDF</span>
-                  </a>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setMensajeExito(null)}
-                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline ml-2 cursor-pointer"
-                >
-                  Cerrar
-                </button>
-              </div>
-            </div>
-          )}
+
 
           {/* Cuerpo Split-View: Columnas Alineadas en la Parte Superior (items-start) */}
-          <div className="flex-1 flex flex-col lg:flex-row items-start gap-5">
+          <div className="flex-1 flex flex-col xl:flex-row items-start gap-5">
             {/* COLUMNA IZQUIERDA: Clientes con Filtro de Mora y Altura Máxima Controlada */}
-            <div className="w-full lg:w-84 xl:w-96 flex flex-col bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden shrink-0 lg:max-h-[calc(100vh-210px)] xl:lg:max-h-[760px] lg:sticky lg:top-4">
+            <div className="w-full xl:w-80 flex flex-col bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden shrink-0 xl:max-h-[calc(100dvh-210px)] xl:sticky xl:top-4">
               {/* Parte Superior (Fija - shrink-0) */}
               <div className="p-4 border-b border-slate-100 space-y-3 shrink-0 bg-white">
                 <div className="flex items-center justify-between">
@@ -1049,7 +985,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
+                  <input id="cartera-customer-search" name="cartera_customer_search"
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -1327,12 +1263,12 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                           {selectedCliente.historialPagos.map((pago) => {
                             const isVoided = pago.status === 'Anulado';
-                            const paymentId = pago.payment_id || String(pago.id).replace('REC-', '');
-                            const pdfUrl = `http://${window.location.hostname}:8000/api/payments/${paymentId}/pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`;
+                            const paymentId = pago.payment_id;
+                            const pdfUrl = receiptPdfUrl(`/api/payments/${paymentId}/pdf`);
 
                             return (
                               <div
-                                key={pago.id}
+                                key={paymentId}
                                 className={`p-3 rounded-xl border text-xs flex flex-col justify-between transition ${
                                   isVoided
                                     ? 'bg-rose-50/40 border-rose-200'
@@ -1349,7 +1285,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                                             : 'bg-cyan-50 text-cyan-800 border-cyan-100'
                                         }`}
                                       >
-                                        {pago.id}
+                                        {pago.receipt_code || pago.id}
                                       </span>
                                       {isVoided ? (
                                         <span className="inline-flex items-center gap-1 px-2 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
@@ -1503,14 +1439,14 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
                               </a>
-                              <button
+                              <ActionButton loading={handleDeleteDocumentPending}
                                 type="button"
                                 onClick={() => handleDeleteDocument(doc.id, doc.file_name)}
                                 className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
                                 title="Eliminar documento"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              </ActionButton>
                             </div>
                           </div>
                         ))}
@@ -1578,10 +1514,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
             <form onSubmit={handleGuardarNuevoLote} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="cartera-new-lot-number" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Identificador / Número de Lote
                 </label>
-                <input
+                <input id="cartera-new-lot-number" name="cartera_new_lot_number"
                   type="text"
                   required
                   placeholder="Ej: Lote 25 o Manzana B - Lote 4"
@@ -1593,10 +1529,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="cartera-new-lot-area" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Área (m²)
                   </label>
-                  <input
+                  <input id="cartera-new-lot-area" name="cartera_new_lot_area"
                     type="number"
                     step="any"
                     required
@@ -1606,10 +1542,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="cartera-new-lot-price" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Precio Total ($ USD)
                   </label>
-                  <input
+                  <input id="cartera-new-lot-price" name="cartera_new_lot_price"
                     type="number"
                     step="any"
                     required
@@ -1628,14 +1564,14 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleGuardarNuevoLotePending}
                   type="submit"
                   disabled={isSubmittingLot}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingLot && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{isSubmittingLot ? 'Guardando...' : 'Crear Lote'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1645,7 +1581,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
       {/* ================= MODAL 2: ASIGNAR Y PACTAR PLAN DE CUOTAS ================= */}
       {isAssignModalOpen && selectedLotForAssign && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fade-in">
-          <div className="bg-white rounded-lg w-full max-w-lg p-6 shadow-xl border border-slate-200 transition-all max-h-[92vh] overflow-y-auto">
+          <div className="bg-white rounded-lg w-full max-w-lg p-6 shadow-xl border border-slate-200 transition-all max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700">
@@ -1689,7 +1625,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 </div>
 
                 {!showNewCustomerForm ? (
-                  <select
+                  <select id="cartera-assign-customer" name="cartera_assign_customer"
                     value={selectedCustomerForAssign}
                     onChange={(e) => {
                       if (e.target.value === 'NEW') {
@@ -1741,10 +1677,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        <label htmlFor="cartera-new-customer-name" className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
                           Nombre Completo *
                         </label>
-                        <input
+                        <input id="cartera-new-customer-name" name="cartera_new_customer_name"
                           type="text"
                           value={newCustomerData.name}
                           onChange={(e) => setNewCustomerData((prev) => ({ ...prev, name: e.target.value }))}
@@ -1755,10 +1691,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                       </div>
 
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        <label htmlFor="cartera-new-customer-id-card" className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
                           Cédula / Identificación *
                         </label>
-                        <input
+                        <input id="cartera-new-customer-id-card" name="cartera_new_customer_id_card"
                           type="text"
                           value={newCustomerData.id_card}
                           onChange={(e) => setNewCustomerData((prev) => ({ ...prev, id_card: e.target.value }))}
@@ -1769,10 +1705,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                       </div>
 
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        <label htmlFor="cartera-new-customer-phone" className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
                           Celular
                         </label>
-                        <input
+                        <input id="cartera-new-customer-phone" name="cartera_new_customer_phone"
                           type="text"
                           value={newCustomerData.phone}
                           onChange={(e) => setNewCustomerData((prev) => ({ ...prev, phone: e.target.value }))}
@@ -1782,10 +1718,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                       </div>
 
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        <label htmlFor="cartera-new-customer-email" className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
                           Correo Electrónico
                         </label>
-                        <input
+                        <input id="cartera-new-customer-email" name="cartera_new_customer_email"
                           type="email"
                           value={newCustomerData.email}
                           onChange={(e) => setNewCustomerData((prev) => ({ ...prev, email: e.target.value }))}
@@ -1796,7 +1732,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                     </div>
 
                     <div className="flex justify-end pt-1">
-                      <button
+                      <ActionButton loading={handleSaveNewCustomerPending}
                         type="button"
                         disabled={isSavingNewCustomer}
                         onClick={handleSaveNewCustomer}
@@ -1813,7 +1749,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                             <span>Guardar y Seleccionar Cliente</span>
                           </>
                         )}
-                      </button>
+                      </ActionButton>
                     </div>
                   </div>
                 )}
@@ -1828,7 +1764,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                     </label>
                     <span className="text-[10px] text-slate-400 font-semibold">1 a 120</span>
                   </div>
-                  <input
+                  <input id="cartera-installments" name="cartera_installments"
                     type="number"
                     min="1"
                     max="120"
@@ -1869,7 +1805,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                     </label>
                     <span className="text-[10px] text-slate-400 font-semibold">Día 1 al 31</span>
                   </div>
-                  <input
+                  <input id="cartera-payment-day" name="cartera_payment_day"
                     type="number"
                     min="1"
                     max="31"
@@ -1944,14 +1880,14 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleAssignSubmitPending}
                   type="submit"
                   disabled={isSubmittingAssign || isSavingNewCustomer}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingAssign && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{isSubmittingAssign ? 'Pactando Venta...' : 'Pactar Plan y Venta'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1987,10 +1923,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
             <form onSubmit={handleUploadDocumentSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="cartera-document-lot" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Lote Asociado
                 </label>
-                <select
+                <select id="cartera-document-lot" name="cartera_document_lot"
                   value={docLotId}
                   onChange={(e) => setDocLotId(e.target.value)}
                   required
@@ -2005,10 +1941,10 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="cartera-document-type" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Tipo de Documento
                 </label>
-                <select
+                <select id="cartera-document-type" name="cartera_document_type"
                   value={docType}
                   onChange={(e) => setDocType(e.target.value)}
                   required
@@ -2028,7 +1964,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                   Seleccionar Archivo (PDF o Imagen - Máx 10MB)
                 </label>
                 <div className="border-2 border-dashed border-indigo-200 rounded-xl p-4 bg-indigo-50/20 hover:bg-indigo-50/40 transition text-center cursor-pointer relative">
-                  <input
+                  <input id="cartera-document-file" name="cartera_document_file"
                     type="file"
                     ref={fileInputRef}
                     required
@@ -2063,14 +1999,14 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleUploadDocumentSubmitPending}
                   type="submit"
                   disabled={isSubmittingDoc || !docFile}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingDoc && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{isSubmittingDoc ? 'Subiendo archivo...' : 'Subir y Vincular Documento'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -2079,9 +2015,9 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
       {/* ================= MODAL 4: ANULACIÓN FORMAL DE COMPROBANTE CONTABLE ================= */}
       {isVoidModalOpen && selectedPaymentForVoid && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fade-in">
-          <div className="bg-white rounded-lg w-full max-w-lg p-6 shadow-xl border border-slate-200 transition-all">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between shrink-0 border-b border-slate-100 p-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
                   <ShieldAlert className="w-5 h-5" />
@@ -2104,6 +2040,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
               </button>
             </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
             {/* Aviso informativo */}
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 mb-4 text-xs text-amber-900 flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -2138,12 +2075,12 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
             </div>
 
             {/* Formulario con Motivo Obligatorio */}
-            <form onSubmit={handleConfirmVoidPayment} className="space-y-4">
+            <form id="void-portfolio-receipt" onSubmit={handleConfirmVoidPayment} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                   Motivo formal de anulación <span className="text-rose-600">*</span>
                 </label>
-                <textarea
+                <textarea id="cartera-void-reason" name="cartera_void_reason"
                   rows="3"
                   value={voidReason}
                   onChange={(e) => setVoidReason(e.target.value)}
@@ -2162,32 +2099,51 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                 </div>
               )}
 
+            </form>
+            </div>
               {/* Botones de acción */}
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <div className="shrink-0 border-t bg-white p-3 sm:p-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
                 <button
                   type="button"
                   onClick={() => setIsVoidModalOpen(false)}
                   disabled={isSubmittingVoid}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md transition cursor-pointer"
+                  className="w-full sm:w-auto min-h-[46px] px-4 text-base font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-md transition cursor-pointer"
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleConfirmVoidPaymentPending}
                   type="submit"
+                  form="void-portfolio-receipt"
                   disabled={isSubmittingVoid || voidReason.trim().length < 5}
-                  className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
+                  className="w-full sm:w-auto min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2 text-base font-semibold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmittingVoid && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <Ban className="w-3.5 h-3.5" />
                   <span>{isSubmittingVoid ? 'Anulando...' : 'Confirmar Anulación Contable'}</span>
-                </button>
+                </ActionButton>
               </div>
-            </form>
+
           </div>
         </div>
       )}
 
       {/* ================= MODAL 5: CRONOGRAMA DE CUOTAS Y AMORTIZACIÓN EN PANTALLA ================= */}
+      {inventoryAction && projectInfo && (
+        <InventoryDialog
+          action={inventoryAction}
+          project={projectInfo}
+          onClose={() => setInventoryAction(null)}
+          onSaved={() => {
+            setInventoryAction(null);
+            if (inventoryAction.type === 'delete') {
+              navigate('/proyectos', { replace: true });
+            } else {
+              fetchLotes();
+              fetchProyectoClientes();
+            }
+          }}
+        />
+      )}
       <AmortizationModal
         isOpen={amortizationModalOpen}
         onClose={() => setAmortizationModalOpen(false)}

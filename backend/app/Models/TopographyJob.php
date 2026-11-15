@@ -11,6 +11,7 @@ class TopographyJob extends Model
     use HasFactory;
 
     protected $fillable = [
+        'project_id',
         'client_name',
         'client_phone',
         'service_type',

@@ -1,22 +1,25 @@
-import React from 'react';
+import { useAuth } from './context/AuthContext';
+import { getAuthenticatedRole, getHomeRouteByRole } from './utils/roleRoutes';
+import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import axios from 'axios';
 import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
 import Proyectos from './pages/Proyectos';
 import ProyectoClientes from './pages/ProyectoClientes';
 import ProyectoPagar from './pages/ProyectoPagar';
-import Topografia from './pages/Topografia';
-import Marketing from './pages/Marketing';
-import Clientes from './pages/Clientes';
-import Recibos from './pages/Recibos';
-import Usuarios from './pages/Usuarios';
-import Auditoria from './pages/Auditoria';
-import AlertasMora from './pages/AlertasMora';
-import Escrituras from './pages/Escrituras';
 import TareasAdmin from './pages/TareasAdmin';
-import Cheques from './pages/Cheques';
+
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const Recibos = React.lazy(() => import('./pages/Recibos'));
+const Clientes = React.lazy(() => import('./pages/Clientes'));
+const Escrituras = React.lazy(() => import('./pages/Escrituras'));
+const Topografia = React.lazy(() => import('./pages/Topografia'));
+const Cheques = React.lazy(() => import('./pages/Cheques'));
+const Usuarios = React.lazy(() => import('./pages/Usuarios'));
+const Auditoria = React.lazy(() => import('./pages/Auditoria'));
+const AlertasMora = React.lazy(() => import('./pages/AlertasMora'));
+const MarketingCRM = React.lazy(() => import('./pages/MarketingCRM'));
 
 // ==========================================================
 // CONFIGURACIÓN GLOBAL DE INTERCEPTORES DE AXIOS (SANCTUM)
@@ -63,70 +66,70 @@ function ProtectedRoute() {
   return <Outlet />;
 }
 
-// Guard de ruta exclusivo para el CEO (Super Admin)
-function CeoRoute({ children }) {
-  let userRoles = [];
-  try {
-    const user = JSON.parse(localStorage.getItem('user') || 'null');
-    userRoles = Array.isArray(user?.roles) ? user.roles.map((role) => role.name) : [];
-  } catch {
-    userRoles = [];
-  }
-  const isSuperAdmin = userRoles.includes('Super Admin');
+function RoleRoute({ allowedRoles }) {
+  const { user } = useAuth();
+  const role = getAuthenticatedRole(user);
 
-  if (!isSuperAdmin) {
-    return <Navigate to="/dashboard" replace />;
-  }
+  return allowedRoles.includes(role) ? <Outlet /> : <Navigate replace to={getHomeRouteByRole(role)} />;
+}
 
-  return children;
+function HomeRedirect() {
+  const { user } = useAuth();
+  const token = localStorage.getItem('auth_token')?.trim();
+  return <Navigate replace to={token ? getHomeRouteByRole(getAuthenticatedRole(user)) : '/login'} />;
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        {/* Rutas Públicas */}
-        <Route path="/" element={<Login />} />
-        <Route path="/login" element={<Login />} />
+      <Suspense fallback={<div className="p-8 text-slate-500">Cargando módulo...</div>}>
+        <Routes>
+          {/* Rutas Públicas */}
+          <Route path="/" element={<HomeRedirect />} />
+          <Route path="/login" element={<Login />} />
 
-        {/* Rutas Protegidas mediante ProtectedRoute y MainLayout */}
-        <Route element={<ProtectedRoute />}>
-          <Route element={<MainLayout />}>
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/proyectos" element={<Proyectos />} />
-            <Route path="/proyectos/:id/lotes" element={<ProyectoClientes defaultTab="lotes" />} />
-            <Route path="/proyectos/:id/clientes" element={<ProyectoClientes defaultTab="cobros" />} />
-            <Route path="/proyectos/:id/clientes/pagar" element={<ProyectoPagar />} />
-            <Route path="/proyectos/:id/pagar" element={<ProyectoPagar />} />
-            {/* Fallback de compatibilidad para ruta previa */}
-            <Route path="/proyectos/:id" element={<ProyectoClientes defaultTab="lotes" />} />
-            <Route path="/topografia" element={<Topografia />} />
-            <Route path="/topografia/cobro" element={<Topografia openCobroModal={true} />} />
-            <Route path="/marketing" element={<Marketing />} />
-            <Route path="/clientes" element={<Clientes />} />
-            <Route path="/recibos" element={<Recibos />} />
-            <Route path="/recibos/emitir" element={<Recibos openDirectPaymentModal={true} />} />
-            <Route path="/escrituras" element={<Escrituras />} />
-            <Route path="/escrituras/iniciartramite" element={<Escrituras openNewModal={true} />} />
-            <Route path="/tareas" element={<TareasAdmin />} />
-            <Route path="/tareas/asignarnuevatarea" element={<TareasAdmin openNewModal={true} />} />
-            <Route path="/alertas-mora" element={<AlertasMora />} />
-            <Route
-              path="/cheques"
-              element={
-                <CeoRoute>
-                  <Cheques />
-                </CeoRoute>
-              }
-            />
-            <Route path="/usuarios" element={<Usuarios />} />
-            <Route path="/auditoria" element={<Auditoria />} />
+          {/* Rutas Protegidas mediante ProtectedRoute y MainLayout */}
+          <Route element={<ProtectedRoute />}>
+            <Route element={<MainLayout />}>
+              <Route path="/proyectos" element={<Proyectos />} />
+              <Route path="/proyectos/:id/lotes" element={<ProyectoClientes defaultTab="lotes" />} />
+              <Route path="/proyectos/:id/clientes" element={<ProyectoClientes defaultTab="cobros" />} />
+              <Route path="/proyectos/:id/clientes/pagar" element={<ProyectoPagar />} />
+              <Route path="/proyectos/:id/pagar" element={<ProyectoPagar />} />
+              {/* Fallback de compatibilidad para ruta previa */}
+              <Route path="/proyectos/:id" element={<ProyectoClientes defaultTab="lotes" />} />
+              <Route element={<RoleRoute allowedRoles={['Super Admin', 'Topógrafo', 'Topografo']} />}>
+                <Route path="/topografia" element={<Topografia />} />
+                <Route path="/topografia/cobro" element={<Topografia openCobroModal={true} />} />
+              </Route>
+              <Route element={<RoleRoute allowedRoles={['Super Admin', 'Asesor Comercial']} />}>
+                <Route path="/marketing" element={<MarketingCRM />} />
+              </Route>
+              <Route path="/clientes" element={<Clientes />} />
+              <Route path="/recibos" element={<Recibos />} />
+              <Route path="/recibos/emitir" element={<Recibos openDirectPaymentModal={true} />} />
+              <Route element={<RoleRoute allowedRoles={['Super Admin', 'Administrador']} />}>
+                <Route path="/escrituras" element={<Escrituras />} />
+                <Route path="/escrituras/iniciartramite" element={<Escrituras openNewModal={true} />} />
+                <Route path="/tareas" element={<TareasAdmin />} />
+                <Route path="/tareas/asignarnuevatarea" element={<TareasAdmin openNewModal={true} />} />
+              </Route>
+              <Route element={<RoleRoute allowedRoles={['Super Admin', 'Administrador', 'Asesor Comercial']} />}>
+                <Route path="/alertas-mora" element={<AlertasMora />} />
+              </Route>
+              <Route element={<RoleRoute allowedRoles={['Super Admin']} />}>
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/cheques" element={<Cheques />} />
+                <Route path="/usuarios" element={<Usuarios />} />
+                <Route path="/auditoria" element={<Auditoria />} />
+              </Route>
+            </Route>
           </Route>
-        </Route>
 
-        {/* Fallback de redirección */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          {/* Fallback de redirección */}
+          <Route path="*" element={<HomeRedirect />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

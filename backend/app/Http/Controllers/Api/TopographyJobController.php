@@ -66,6 +66,7 @@ class TopographyJobController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'project_id' => 'nullable|integer|exists:projects,id',
             'client_name' => 'required|string|max:255',
             'client_phone' => 'nullable|string|max:50',
             'service_type' => 'required|string|max:255',
@@ -78,6 +79,7 @@ class TopographyJobController extends Controller
         ]);
 
         $job = TopographyJob::create([
+            'project_id' => $validated['project_id'] ?? null,
             'client_name' => strip_tags(trim($validated['client_name'])),
             'client_phone' => !empty($validated['client_phone']) ? strip_tags(trim($validated['client_phone'])) : null,
             'service_type' => strip_tags(trim($validated['service_type'])),
@@ -104,6 +106,7 @@ class TopographyJobController extends Controller
         $job = TopographyJob::findOrFail($id);
 
         $validated = $request->validate([
+            'project_id' => 'nullable|integer|exists:projects,id',
             'status' => 'nullable|string|in:Pendiente,En Campo,En Planos (AutoCAD),Entregado',
             'amount_paid' => 'nullable|numeric|min:0|max:999999',
             'add_payment' => 'nullable|numeric|min:0|max:999999',

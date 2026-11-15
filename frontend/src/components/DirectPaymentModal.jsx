@@ -1,20 +1,18 @@
-/**
- * DirectPaymentModal.jsx  –  v2: Layout 2 columnas tablet/desktop + pad de firma táctil del cliente
- *
- * Columna Izquierda : datos del cobro (cliente, proyecto, lote, concepto, monto, método, ref.)
- * Columna Derecha   : Firma táctil del cliente (react-signature-canvas) + firma del emisor (lectura)
- *
- * Recibera asignada automáticamente por el backend (RoleSecurity::resolveEffectiveUser).
- * Numeración correlativa estricta con DB::transaction + lockForUpdate en el backend.
- */
+import { useId } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from './ActionButton';
+import { useAuth } from '../context/AuthContext';
+import { getAuthenticatedRole } from '../utils/roleRoutes';
+import { receiptPdfUrl } from '../utils/receiptPdfUrl';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import SignatureCanvas from 'react-signature-canvas';
+import SignaturePadField from './SignaturePadField';
+import EmitterSignaturePreview from './EmitterSignaturePreview';
 import axios from 'axios';
 import {
   X, User, Building2, MapPin, DollarSign, CreditCard, FileText,
   Hash, CheckCircle2, AlertTriangle, Loader2, Send, MessageCircle,
-  Download, Receipt, PenLine, RotateCcw, Eye,
+  Download, Receipt,
 } from 'lucide-react';
 import {
   DEFAULT_CEO_PHONE,
@@ -48,12 +46,16 @@ const PAYMENT_METHODS = [
 ];
 const BANK_METHODS = ['transferencia', 'depósito', 'deposito'];
 
-export default function DirectPaymentModal({ onClose, onSuccess }) {
+export default function DirectPaymentModal({ onClose, onSuccess, sequences }) {
+  const fieldId = useId();
   const navigate = useNavigate();
 
-  const userRole   = localStorage.getItem('user_role') || 'Super Admin';
+  const { user } = useAuth();
+  const role = getAuthenticatedRole(user);
+  const userRole = role === 'Topografo' ? 'Topógrafo' : role;
   const bookInfo   = ROLE_TO_BOOK[userRole] || ROLE_TO_BOOK['Super Admin'];
   const colorCls   = COLORS[bookInfo.color];
+  const nextCode = sequences.find(({ prefix }) => prefix === bookInfo.prefix + '-')?.next_receipt_code;
 
   // ── Catálogos ────────────────────────────────────────────────────────────
   const [customers, setCustomers] = useState([]);
@@ -74,11 +76,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
 
   // ── Firmas ───────────────────────────────────────────────────────────────
   const sigCanvasRef   = useRef(null);   // firma táctil del cliente
-  const sigWrapperRef  = useRef(null);   // div contenedor del canvas (para resize)
   const initialDataRequested = useRef(false);
-  const [emitterSig,   setEmitterSig]   = useState(null);    // firma del emisor (perfil)
-  const [emitterName,  setEmitterName]  = useState('');
-  const [canvasDims,   setCanvasDims]   = useState({ w: 400, h: 160 });
 
   // ── UI ────────────────────────────────────────────────────────────────────
   const [loadingData,  setLoadingData]  = useState(true);
@@ -95,22 +93,13 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
     if (initialDataRequested.current) return;
     initialDataRequested.current = true;
     loadCatalogs();
-    loadEmitterSignature();
   }, []);
-
-  const loadEmitterSignature = async () => {
-    try {
-      const res = await axios.get('/api/profile/signature');
-      setEmitterSig(res.data?.signature_base64 || null);
-      setEmitterName(res.data?.name || localStorage.getItem('user_name') || 'Emisor');
-    } catch { /* sin firma configurada */ }
-  };
 
   const loadCatalogs = async () => {
     setLoadingData(true);
     try {
       const [custRes, projRes] = await Promise.all([
-        axios.get('/api/customers?per_page=500'),
+        axios.get('/api/customers/options'),
         axios.get('/api/projects'),
       ]);
       const custArr = Array.isArray(custRes.data) ? custRes.data : (custRes.data.data || []);
@@ -191,27 +180,6 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  // ── 6. Resize del canvas de firma (maneja rotación tablet) ───────────────
-  useEffect(() => {
-    const updateDims = () => {
-      if (sigWrapperRef.current) {
-        const w = sigWrapperRef.current.clientWidth;
-        const h = Math.max(140, Math.round(w * 0.38));
-        setCanvasDims({ w, h });
-        // Preservar el trazo existente al redibujar
-        if (sigCanvasRef.current) {
-          const data = sigCanvasRef.current.toData();
-          sigCanvasRef.current.clear();
-          sigCanvasRef.current.fromData(data);
-        }
-      }
-    };
-    updateDims();
-    const observer = new ResizeObserver(updateDims);
-    if (sigWrapperRef.current) observer.observe(sigWrapperRef.current);
-    return () => observer.disconnect();
-  }, []);
-
   // ── 7. Filtro de clientes buscados ────────────────────────────────────────
   const filteredCustomers = customerSearch.length >= 1
     ? customers.filter(c =>
@@ -220,12 +188,8 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
       ).slice(0, 10)
     : customers.slice(0, 10);
 
-  // ── 8. Limpiar firma del cliente ──────────────────────────────────────────
-  const clearClientSignature = () => { sigCanvasRef.current?.clear(); };
-
   // ── 9. Submit ─────────────────────────────────────────────────────────────
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const [handleSubmit, handleSubmitPending] = useSingleSubmit(async (e) => {
     setFormError(null);
 
     if (!lotId)                        { setFormError('Debes seleccionar un lote / contrato.'); return; }
@@ -248,7 +212,6 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
         payment_method: payMethod,
         bank_reference: needsBankRef ? bankRef.trim() : undefined,
         // receipt_book NO se envía → backend lo asigna con resolveEffectiveUser
-        signature_base64: emitterSig || undefined,      // firma del emisor
         customer_signature: clientSigB64 || undefined,  // firma táctil del cliente
       };
 
@@ -269,13 +232,14 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
         project_name:   pd.lot?.project?.name   || projects.find(p => String(p.id) === projectId)?.name || '',
         lot_number:     pd.lot?.lot_number       || lots.find(l => String(l.id) === lotId)?.lot_number || '',
         concept_detail: concept.trim() || 'Pago de cuota',
-        cashier_name:   localStorage.getItem('user_name') || emitterName || 'Emisor',
+        cashier_name:   pd.cashier?.name || 'Emisor',
       });
 
       window.dispatchEvent(new Event('paymentUpdated'));
       window.dispatchEvent(new Event('notifications-updated'));
       if (onSuccess) onSuccess();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       const msg = err.response?.data?.message
         || Object.values(err.response?.data?.errors || {}).flat().join(' ')
         || 'Error al procesar el cobro. Intenta nuevamente.';
@@ -283,7 +247,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
     } finally {
       setSubmitting(false);
     }
-  };
+  }, { form: true });
 
   // ── WhatsApp handlers ─────────────────────────────────────────────────────
   const handleWhatsAppCustomer = () => {
@@ -313,14 +277,11 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
   // PANEL DE ÉXITO
   // ─────────────────────────────────────────────────────────────────────────
   if (successPayment) {
-    const token     = localStorage.getItem('auth_token');
-    const baseUrl   = `http://${window.location.hostname}:8000`;
-    const rawUrl    = successPayment.pdf_url.startsWith('http') ? successPayment.pdf_url : `${baseUrl}${successPayment.pdf_url}`;
-    const pdfUrl    = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}token=${token}`;
+    const pdfUrl = receiptPdfUrl(successPayment.pdf_url);
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden bg-white rounded-xl shadow-xl">
           {/* Header éxito */}
           <div className="flex items-center justify-between px-6 py-4 border-b bg-emerald-50">
             <div className="flex items-center gap-3">
@@ -339,31 +300,33 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
             </button>
           </div>
 
-          {/* PDF inline */}
-          <div className="flex-1 min-h-[340px] bg-slate-100">
-            <iframe src={pdfUrl} title="Recibo PDF" className="w-full h-full border-0" style={{ minHeight: 340 }} />
-          </div>
-
-          {/* Acciones */}
-          <div className="px-6 py-4 border-t space-y-2">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap gap-3">
               <a href={pdfUrl} target="_blank" rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-slate-800 hover:bg-slate-900 transition cursor-pointer">
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-slate-800 hover:bg-slate-900 transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center">
                 <Download className="w-4 h-4" /> Abrir / Imprimir PDF
               </a>
               <button type="button" onClick={handleWhatsAppCustomer}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-green-600 hover:bg-green-700 transition cursor-pointer">
-                <MessageCircle className="w-4 h-4" /> 📲 Enviar al Cliente
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-green-600 hover:bg-green-700 transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center">
+                <MessageCircle className="w-4 h-4" /> Enviar Recibo al Cliente (WhatsApp)
               </button>
               <button type="button" onClick={handleWhatsAppCeo}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition cursor-pointer">
-                <MessageCircle className="w-4 h-4" /> 📲 Reportar al CEO
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition cursor-pointer w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center">
+                <MessageCircle className="w-4 h-4" /> Reportar Cobro al CEO
+              </button>
+              <button type="button" onClick={() => {
+                setSuccessPayment(null);
+                setAmount('');
+                setBankRef('');
+                setConcept('');
+                setLotId('');
+                setProjectId('');
+                setCustomerId('');
+                setCustomerSearch('');
+              }} className="inline-flex items-center justify-center rounded-xl bg-slate-100 px-4 text-sm font-semibold text-slate-700 w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center">
+                Nuevo Cobro
               </button>
             </div>
-            <button type="button" onClick={handleCloseSuccess}
-              className="w-full px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer">
-              Cerrar y volver a Recibos
-            </button>
           </div>
         </div>
       </div>
@@ -374,23 +337,23 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
   // FORMULARIO DE COBRO — Layout 2 columnas (md)
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
+      <div className="w-full max-w-4xl max-h-[92dvh] flex flex-col overflow-hidden bg-white rounded-xl shadow-xl">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 shrink-0">
+        <div className="flex items-center justify-between px-3 sm:px-5 py-3.5 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center text-slate-700">
               <Receipt className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-900">Emitir Recibo Directo</h2>
+              <h2 className="text-base font-bold text-slate-900 sm:text-lg">Emitir Recibo Directo</h2>
               <p className="text-xs text-slate-500">Cobro universal · Recibera asignada automáticamente</p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-[10px] font-mono font-extrabold px-2 py-1 rounded border ${colorCls.badge}`}>
-              {bookInfo.prefix}-XXXXX
+            <span className={`hidden sm:inline text-[10px] font-mono font-extrabold px-2 py-1 rounded border ${colorCls.badge}`}>
+              {nextCode || bookInfo.prefix + '-…'}
             </span>
             <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer ml-1">
               <X className="w-5 h-5" />
@@ -399,7 +362,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
         </div>
 
         {/* Body — scrollable */}
-        <div className="flex-1 overflow-y-auto px-5 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
           {loadingData ? (
             <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-400">
               <Loader2 className="w-8 h-8 animate-spin" />
@@ -429,7 +392,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                       <User className="w-3.5 h-3.5 inline mr-1" />
                       Cliente / Titular <span className="text-rose-500">*</span>
                     </label>
-                    <input
+                    <input id={`cobro-directo-customer-search-${fieldId}`} name="cobro_directo_customer_search"
                       type="text"
                       value={customerSearch}
                       onChange={e => {
@@ -466,7 +429,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                       <Building2 className="w-3.5 h-3.5 inline mr-1" />
                       Proyecto
                     </label>
-                    <select value={projectId}
+                    <select id={`cobro-directo-project-${fieldId}`} name="cobro_directo_project" value={projectId}
                       onChange={e => { setProjectId(e.target.value); setLotId(''); setCustomerId(''); setCustomerSearch(''); }}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50">
                       <option value="">— Selecciona un proyecto —</option>
@@ -480,7 +443,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                       <MapPin className="w-3.5 h-3.5 inline mr-1" />
                       Lote / Contrato <span className="text-rose-500">*</span>
                     </label>
-                    <select value={lotId} onChange={e => handleSelectLot(e.target.value)} required
+                    <select id={`cobro-directo-lot-${fieldId}`} name="cobro_directo_lot" value={lotId} onChange={e => handleSelectLot(e.target.value)} required
                       disabled={!projectId}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50 disabled:opacity-50">
                       <option value="">{projectId ? '— Selecciona un lote —' : '— Primero elige proyecto o cliente —'}</option>
@@ -498,19 +461,19 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                       <FileText className="w-3.5 h-3.5 inline mr-1" />
                       Concepto del Recibo
                     </label>
-                    <input type="text" value={concept} onChange={e => setConcept(e.target.value)}
+                    <input id={`cobro-directo-concept-${fieldId}`} name="cobro_directo_concept" type="text" value={concept} onChange={e => setConcept(e.target.value)}
                       placeholder="Ej: Abono cuota mensual, pago inicial..." maxLength={255}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50" />
                   </div>
 
                   {/* Monto + Método */}
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1.5">
                         <DollarSign className="w-3.5 h-3.5 inline mr-1" />
                         Monto (USD) <span className="text-rose-500">*</span>
                       </label>
-                      <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
+                      <input id={`cobro-directo-amount-${fieldId}`} name="cobro_directo_amount" type="number" value={amount} onChange={e => setAmount(e.target.value)}
                         min="0.01" step="0.01" required placeholder="0.00"
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50" />
                     </div>
@@ -519,7 +482,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                         <CreditCard className="w-3.5 h-3.5 inline mr-1" />
                         Método <span className="text-rose-500">*</span>
                       </label>
-                      <select value={payMethod} onChange={e => { setPayMethod(e.target.value); setBankRef(''); }} required
+                      <select id={`cobro-directo-payment-method-${fieldId}`} name="cobro_directo_payment_method" value={payMethod} onChange={e => { setPayMethod(e.target.value); setBankRef(''); }} required
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50">
                         {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
                       </select>
@@ -533,7 +496,7 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                         <Hash className="w-3.5 h-3.5 inline mr-1" />
                         N° Comprobante / Referencia Bancaria <span className="text-rose-500">*</span>
                       </label>
-                      <input type="text" value={bankRef} onChange={e => setBankRef(e.target.value)}
+                      <input id={`cobro-directo-bank-reference-${fieldId}`} name="cobro_directo_bank_reference" type="text" value={bankRef} onChange={e => setBankRef(e.target.value)}
                         placeholder="Ej: TRF-20241103-001234" minLength={3} maxLength={100} required
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-slate-50" />
                     </div>
@@ -543,8 +506,8 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                   <div className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border text-xs font-semibold ${colorCls.badge}`}>
                     <Receipt className="w-3.5 h-3.5 shrink-0" />
                     <span>
-                      Recibera: <strong>{bookInfo.book}</strong> — Serie <strong>{bookInfo.prefix}-XXXXX</strong>
-                      &nbsp;(rol: <em>{userRole}</em>)
+                      Recibera: <strong>{bookInfo.book}</strong>
+                      <span className="block">Comprobante a generar: <strong>{nextCode || 'Se asigna al emitir'}</strong></span>
                     </span>
                   </div>
                 </div>
@@ -552,60 +515,9 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
                 {/* ════════════════════════════════════════════
                     COLUMNA DERECHA – Firmas
                 ════════════════════════════════════════════ */}
-                <div className="space-y-4 flex flex-col">
-
-                  {/* ── Firma táctil del cliente ──────────────────────── */}
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      <PenLine className="w-3.5 h-3.5 inline mr-1" />
-                      Firma del Cliente (Pad Táctil)
-                    </label>
-                    <div ref={sigWrapperRef}
-                      className="w-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 overflow-hidden touch-none"
-                      style={{ minHeight: 150 }}>
-                      <SignatureCanvas
-                        ref={sigCanvasRef}
-                        penColor="#1e293b"
-                        canvasProps={{
-                          width: canvasDims.w,
-                          height: canvasDims.h,
-                          style: { display: 'block', width: '100%', height: `${canvasDims.h}px`, touchAction: 'none' },
-                        }}
-                        backgroundColor="rgba(248,250,252,0)"
-                      />
-                    </div>
-                    <button type="button" onClick={clearClientSignature}
-                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer">
-                      <RotateCcw className="w-3.5 h-3.5" /> Limpiar Firma
-                    </button>
-                    <p className="text-[10px] text-slate-400 mt-1">
-                      Firma con el dedo o el lápiz táctil. Se capturará en el recibo.
-                    </p>
-                  </div>
-
-                  {/* ── Firma digital del emisor (solo lectura) ─────────── */}
-                  <div className="flex-1">
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      <Eye className="w-3.5 h-3.5 inline mr-1" />
-                      Firma Automática del Emisor
-                    </label>
-                    {emitterSig ? (
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex flex-col items-center gap-2">
-                        <img src={emitterSig} alt="Firma del emisor"
-                          className="h-16 object-contain" style={{ maxWidth: 200 }} />
-                        <p className="text-[11px] text-slate-500 text-center font-semibold">
-                          {emitterName} &bull; {bookInfo.book}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
-                        <p className="text-xs text-slate-400">
-                          No tienes firma digital configurada. Configúrala en tu perfil.
-                          <br />El espacio quedará en blanco para firma manual.
-                        </p>
-                      </div>
-                    )}
-                  </div>
+                <div className="min-w-0 space-y-4">
+                  <SignaturePadField ref={sigCanvasRef} />
+                  <EmitterSignaturePreview />
                 </div>
 
               </div>{/* fin grid 2 cols */}
@@ -615,17 +527,17 @@ export default function DirectPaymentModal({ onClose, onSuccess }) {
 
         {/* Footer */}
         {!loadingData && (
-          <div className="px-5 py-4 border-t border-slate-100 shrink-0 flex items-center gap-3">
+          <div className="shrink-0 border-t bg-white p-3 sm:p-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
             <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer">
+              className="w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center px-4 py-2.5 rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer">
               Cancelar
             </button>
-            <button type="submit" form="direct-payment-form" disabled={submitting}
-              className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${colorCls.btn}`}>
+            <ActionButton loading={handleSubmitPending} type="submit" form="direct-payment-form" disabled={submitting}
+              className={`w-full sm:w-auto min-h-[46px] text-base font-semibold justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-white transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${colorCls.btn}`}>
               {submitting
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Procesando...</>
                 : <><Send className="w-4 h-4" /> Emitir Recibo</>}
-            </button>
+            </ActionButton>
           </div>
         )}
       </div>

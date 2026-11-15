@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use App\Helpers\RoleSecurity;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,7 +15,7 @@ class EnsureSuperAdmin
     {
         $user = $request->user();
 
-        if (!RoleSecurity::isRealSuperAdmin($user)) {
+        if (!$user?->hasRole('Super Admin')) {
             return response()->json([
                 'success' => false,
                 'message' => 'Acceso denegado. Esta acción o módulo es exclusivo para el Super Administrador / CEO.',

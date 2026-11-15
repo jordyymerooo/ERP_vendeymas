@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -11,8 +14,6 @@ import {
   Mail,
   Phone,
   Building2,
-  ChevronLeft,
-  ChevronRight,
   CheckCircle,
   User,
   UserCheck,
@@ -44,6 +45,8 @@ export default function Clientes() {
 
   // Hooks de Estado Requeridos
   const [clientes, setClientes] = useState([]);
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
   const [pagination, setPagination] = useState({});
   const [loading, setLoading] = useState(true);
   const [advisorsList, setAdvisorsList] = useState([]);
@@ -80,9 +83,10 @@ export default function Clientes() {
 
   // Petición a la API con paginación y filtros
   const fetchClientes = async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
-      const params = { page };
+      const params = { page, per_page: perPage };
       if (selectedAdvisorId && selectedAdvisorId !== 'all') {
         params.advisor_id = selectedAdvisorId;
       }
@@ -90,6 +94,11 @@ export default function Clientes() {
         params.search = searchTerm.trim();
       }
       const res = await axios.get('/api/customers', { params });
+      if (requestId !== listRequest.current) return;
+      if (page > res.data.last_page) {
+        await fetchClientes(res.data.last_page);
+        return;
+      }
       setClientes(res.data.data || []);
       setPagination({
         current_page: res.data.current_page,
@@ -99,13 +108,14 @@ export default function Clientes() {
         from: res.data.from,
       });
     } catch (error) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al consultar clientes:', error);
       setToastMessage({
         type: 'error',
         text: 'Error al conectar con la API de clientes.',
       });
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
@@ -115,7 +125,7 @@ export default function Clientes() {
       fetchClientes(1);
     }, 250);
     return () => clearTimeout(timer);
-  }, [selectedAdvisorId, searchTerm]);
+  }, [selectedAdvisorId, searchTerm, perPage]);
 
   useEffect(() => {
     fetchAdvisors();
@@ -158,8 +168,7 @@ export default function Clientes() {
   };
 
   // Guardar (crear o actualizar) cliente
-  const handleGuardarCliente = async (e) => {
-    e.preventDefault();
+  const [handleGuardarCliente, handleGuardarClientePending] = useSingleSubmit(async (e) => {
     if (!clienteForm.name.trim() || !clienteForm.id_card.trim()) return;
 
     setIsSubmitting(true);
@@ -204,6 +213,7 @@ export default function Clientes() {
       // Refrescar lista de clientes en tiempo real
       fetchClientes(pagination.current_page || 1);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al guardar cliente:', err);
       const errMsg =
         err.response?.data?.message ||
@@ -218,10 +228,10 @@ export default function Clientes() {
         setToastMessage(null);
       }, 5000);
     }
-  };
+  }, { form: true });
 
   // Eliminar cliente con validación de seguridad (lotes activos)
-  const handleEliminarCliente = async (cliente) => {
+  const [handleEliminarCliente, handleEliminarClientePending] = useSingleSubmit(async (cliente) => {
     const confirmar = window.confirm(
       `¿Estás seguro de eliminar al cliente "${cliente.name}" (Cédula: ${cliente.id_card})? Esta acción no se puede deshacer.`
     );
@@ -236,6 +246,7 @@ export default function Clientes() {
       // Refrescar lista
       fetchClientes(pagination.current_page || 1);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al eliminar cliente:', err);
       const errorMsg =
         err.response?.data?.message ||
@@ -249,7 +260,7 @@ export default function Clientes() {
         setToastMessage(null);
       }, 6000);
     }
-  };
+  });
 
   // Registros ya filtrados y paginados directamente desde el servidor con índices de PostgreSQL
   const filteredClientes = clientes;
@@ -310,7 +321,7 @@ export default function Clientes() {
             <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-md border border-slate-200">
               <Filter className="w-3.5 h-3.5 text-slate-500 shrink-0" />
               <span className="text-xs font-medium text-slate-600 hidden md:inline">Asesor:</span>
-              <select
+              <select id="clientes-filter-advisor" name="clientes_filter_advisor"
                 value={selectedAdvisorId}
                 onChange={(e) => setSelectedAdvisorId(e.target.value)}
                 className="text-xs font-semibold bg-transparent text-slate-800 focus:outline-none cursor-pointer"
@@ -327,7 +338,7 @@ export default function Clientes() {
 
           <div className="relative w-full sm:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
+            <input id="clientes-search" name="clientes_search"
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -492,14 +503,14 @@ export default function Clientes() {
                         </button>
 
                         {/* Botón Eliminar (Basurero) */}
-                        <button
+                        <ActionButton loading={handleEliminarClientePending}
                           type="button"
                           title="Eliminar Cliente"
                           onClick={() => handleEliminarCliente(cliente)}
                           className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer border border-slate-200"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        </ActionButton>
                       </div>
                     </td>
                   </tr>
@@ -509,43 +520,7 @@ export default function Clientes() {
           </table>
         </div>
 
-        {/* ================= PIE DE TABLA (PAGINACIÓN DINÁMICA) ================= */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-          <div>
-            Mostrando {pagination.from || 0} a {pagination.to || 0} de {pagination.total || 0} clientes
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={!pagination.current_page || pagination.current_page <= 1 || loading}
-              onClick={() => fetchClientes(pagination.current_page - 1)}
-              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold transition ${
-                !pagination.current_page || pagination.current_page <= 1 || loading
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
-                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-900 cursor-pointer shadow-sm active:scale-95'
-              }`}
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Anterior</span>
-            </button>
-            <span className="px-2 font-medium text-slate-600">
-              Página {pagination.current_page || 1} de {pagination.last_page || 1}
-            </span>
-            <button
-              type="button"
-              disabled={!pagination.current_page || pagination.current_page >= pagination.last_page || loading}
-              onClick={() => fetchClientes(pagination.current_page + 1)}
-              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold transition ${
-                !pagination.current_page || pagination.current_page >= pagination.last_page || loading
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
-                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-900 cursor-pointer shadow-sm active:scale-95'
-              }`}
-            >
-              <span>Siguiente</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+        <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchClientes} onPerPageChange={setPerPage} loading={loading} />
       </div>
 
       {/* ================= MODAL DE REGISTRAR / EDITAR CLIENTE ================= */}
@@ -578,10 +553,10 @@ export default function Clientes() {
             <form onSubmit={handleGuardarCliente} className="space-y-4">
               {/* Nombre Completo */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="clientes-name" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Nombre Completo *
                 </label>
-                <input
+                <input id="clientes-name"
                   type="text"
                   name="name"
                   required
@@ -595,10 +570,10 @@ export default function Clientes() {
               {/* Cédula y Celular */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="clientes-id-card" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Identificación (Cédula) *
                   </label>
-                  <input
+                  <input id="clientes-id-card"
                     type="text"
                     name="id_card"
                     required
@@ -609,10 +584,10 @@ export default function Clientes() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="clientes-phone" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Celular *
                   </label>
-                  <input
+                  <input id="clientes-phone"
                     type="tel"
                     name="phone"
                     required
@@ -626,10 +601,10 @@ export default function Clientes() {
 
               {/* Correo Electrónico */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="clientes-email" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Correo Electrónico *
                 </label>
-                <input
+                <input id="clientes-email"
                   type="email"
                   name="email"
                   required
@@ -642,10 +617,10 @@ export default function Clientes() {
 
               {/* Dirección Domiciliaria */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label htmlFor="clientes-address" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Dirección
                 </label>
-                <input
+                <input id="clientes-address"
                   type="text"
                   name="direccion"
                   value={clienteForm.direccion}
@@ -658,10 +633,10 @@ export default function Clientes() {
               {/* Asesor Asignado (Visible si es Super Admin) */}
               {isSuperAdmin && advisorsList.length > 0 && (
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="clientes-assigned-advisor" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Asesor Comercial Responsable
                   </label>
-                  <select
+                  <select id="clientes-assigned-advisor"
                     name="assigned_user_id"
                     value={clienteForm.assigned_user_id}
                     onChange={handleInputChange}
@@ -689,7 +664,7 @@ export default function Clientes() {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleGuardarClientePending}
                   type="submit"
                   disabled={isSubmitting}
                   className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-md shadow-xs transition cursor-pointer disabled:opacity-50"
@@ -702,7 +677,7 @@ export default function Clientes() {
                       ? 'Actualizar Cliente'
                       : 'Guardar Cliente'}
                   </span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>

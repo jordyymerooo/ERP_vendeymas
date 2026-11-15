@@ -1,3 +1,5 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
@@ -132,18 +134,19 @@ export default function TareasAdmin({ openNewModal = false }) {
   const [taskCompletedModal, setTaskCompletedModal] = useState(null);
   const [sendingEmailId, setSendingEmailId] = useState(null);
 
-  const handleNotifyEmail = async (taskId) => {
+  const [handleNotifyEmail, handleNotifyEmailPending] = useSingleSubmit(async (taskId) => {
     setSendingEmailId(taskId);
     try {
       const res = await axios.post(`/api/admin-tasks/${taskId}/notify-email`);
       showToast(res.data?.message || 'Notificación enviada por correo al CEO.');
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error enviando notificación por correo:', err);
       alert(err.response?.data?.message || 'No se pudo enviar el correo.');
     } finally {
       setSendingEmailId(null);
     }
-  };
+  });
 
   // Formulario nueva tarea
   const [newTask, setNewTask] = useState({
@@ -200,7 +203,7 @@ export default function TareasAdmin({ openNewModal = false }) {
   const fetchCatalogs = async () => {
     try {
       const [usersRes, projRes] = await Promise.all([
-        axios.get('/api/users'),
+        axios.get('/api/users/options'),
         axios.get('/api/projects'),
       ]);
       const allUsers = usersRes.data?.data || [];
@@ -239,8 +242,7 @@ export default function TareasAdmin({ openNewModal = false }) {
   };
 
   // Crear tarea (CEO)
-  const handleCreateTask = async (e) => {
-    e.preventDefault();
+  const [handleCreateTask, handleCreateTaskPending] = useSingleSubmit(async (e) => {
     if (!newTask.title.trim() || !newTask.assigned_to) {
       alert('Por favor ingresa un título y asigna la tarea a un administrador.');
       return;
@@ -263,15 +265,16 @@ export default function TareasAdmin({ openNewModal = false }) {
       });
       fetchTasks();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al crear tarea:', err);
       alert(err.response?.data?.message || 'Error al guardar la tarea.');
     } finally {
       setSubmitting(false);
     }
-  };
+  }, { form: true });
 
   // Actualizar estado de tarea (Solo permitido para el Administrador Asignado)
-  const handleStatusChange = async (taskId, newStatus) => {
+  const [handleStatusChange, handleStatusChangePending] = useSingleSubmit(async (taskId, newStatus) => {
     // Si es CEO, bloquear intento de completar
     if (isSuperAdmin && newStatus === 'Completada') {
       alert('Restricción: Solo el Administrador asignado a esta tarea puede certificar y marcar su estado como Completada.');
@@ -299,13 +302,14 @@ export default function TareasAdmin({ openNewModal = false }) {
         showToast(`Tarea actualizada a "${newStatus}".`);
       }
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al actualizar estado:', err);
       alert(err.response?.data?.message || 'Error al actualizar la tarea.');
     }
-  };
+  });
 
   // Eliminar tarea individual
-  const handleDeleteTask = async (taskId) => {
+  const [handleDeleteTask, handleDeleteTaskPending] = useSingleSubmit(async (taskId) => {
     if (!window.confirm('¿Eliminar este registro de tarea? Esta acción no se puede deshacer.')) return;
     try {
       await axios.delete(`/api/admin-tasks/${taskId}`);
@@ -313,13 +317,14 @@ export default function TareasAdmin({ openNewModal = false }) {
       window.dispatchEvent(new Event('notifications-updated'));
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al eliminar tarea:', err);
       alert(err.response?.data?.message || 'No se pudo eliminar la tarea.');
     }
-  };
+  });
 
   // Vaciar todas las tareas completadas del archivo
-  const handleClearCompleted = async () => {
+  const [handleClearCompleted, handleClearCompletedPending] = useSingleSubmit(async () => {
     if (
       !window.confirm(
         '¿Estás seguro de que deseas vaciar todas las tareas completadas del archivo? Esta acción liberará espacio de forma definitiva.'
@@ -335,10 +340,11 @@ export default function TareasAdmin({ openNewModal = false }) {
       setTasks((prev) => prev.filter((t) => t.status !== 'Completada'));
       setCompletedPage(1);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al vaciar tareas completadas:', err);
       alert(err.response?.data?.message || 'No se pudieron vaciar las tareas completadas.');
     }
-  };
+  });
 
   // Manejador del cambio de Administrador en el modal para filtrar proyectos en tiempo real
   const handleAdminChangeInModal = (adminId) => {
@@ -556,7 +562,7 @@ export default function TareasAdmin({ openNewModal = false }) {
         {/* Botón Vaciar Completadas en la esquina de la pestaña de completadas */}
         {activeTab === 'completadas' && rawCompletedTasks.length > 0 && (
           <div className="pb-2 sm:pb-0">
-            <button
+            <ActionButton loading={handleClearCompletedPending}
               type="button"
               onClick={handleClearCompleted}
               className="px-3 py-1.5 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow-2xs"
@@ -564,7 +570,7 @@ export default function TareasAdmin({ openNewModal = false }) {
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-600" />
               <span>Vaciar Completadas</span>
-            </button>
+            </ActionButton>
           </div>
         )}
       </div>
@@ -574,7 +580,7 @@ export default function TareasAdmin({ openNewModal = false }) {
         {/* Buscador */}
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <input id="tareas-search" name="tareas_search"
             type="text"
             value={searchTerm}
             onChange={(e) => {
@@ -588,7 +594,7 @@ export default function TareasAdmin({ openNewModal = false }) {
 
         {/* Prioridad */}
         <div>
-          <select
+          <select id="tareas-filter-priority" name="tareas_filter_priority"
             value={priorityFilter}
             onChange={(e) => {
               setPriorityFilter(e.target.value);
@@ -605,7 +611,7 @@ export default function TareasAdmin({ openNewModal = false }) {
 
         {/* Proyecto */}
         <div>
-          <select
+          <select id="tareas-filter-project" name="tareas_filter_project"
             value={projectFilter}
             onChange={(e) => {
               setProjectFilter(e.target.value);
@@ -625,7 +631,7 @@ export default function TareasAdmin({ openNewModal = false }) {
         {/* Administrador (Solo CEO) */}
         {isSuperAdmin ? (
           <div>
-            <select
+            <select id="tareas-filter-admin" name="tareas_filter_admin"
               value={adminFilter}
               onChange={(e) => {
                 setAdminFilter(e.target.value);
@@ -689,6 +695,8 @@ export default function TareasAdmin({ openNewModal = false }) {
                         borderColor="border-l-4 border-red-600"
                         badgeClass="bg-red-100 text-red-900 border-red-200"
                         onStatusChange={handleStatusChange}
+                        statusPending={handleStatusChangePending}
+                        deletePending={handleDeleteTaskPending}
                         onDelete={handleDeleteTask}
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
@@ -720,6 +728,8 @@ export default function TareasAdmin({ openNewModal = false }) {
                         borderColor="border-l-4 border-amber-500"
                         badgeClass="bg-amber-100 text-amber-900 border-amber-200"
                         onStatusChange={handleStatusChange}
+                        statusPending={handleStatusChangePending}
+                        deletePending={handleDeleteTaskPending}
                         onDelete={handleDeleteTask}
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
@@ -751,6 +761,8 @@ export default function TareasAdmin({ openNewModal = false }) {
                         borderColor="border-l-4 border-slate-400"
                         badgeClass="bg-slate-100 text-slate-700 border-slate-200"
                         onStatusChange={handleStatusChange}
+                        statusPending={handleStatusChangePending}
+                        deletePending={handleDeleteTaskPending}
                         onDelete={handleDeleteTask}
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
@@ -801,9 +813,10 @@ export default function TareasAdmin({ openNewModal = false }) {
 
                         {/* Revertir estado si el Administrador asignado desea reactivarla */}
                         {!isSuperAdmin && isAssignedToCurrentAdmin(task) ? (
-                          <select
+                          <select id={`tareas-table-status-${task.id}`} name={`tareas_table_status_${task.id}`}
                             value={task.status}
                             onChange={(e) => handleStatusChange(task.id, e.target.value)}
+                            disabled={handleStatusChangePending}
                             className="text-[10px] font-bold px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-700 focus:outline-none cursor-pointer"
                           >
                             <option value="Completada">Completada</option>
@@ -860,7 +873,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         </div>
 
                         {/* Botón Eliminar Registro */}
-                        <button
+                        <ActionButton loading={handleDeleteTaskPending}
                           type="button"
                           onClick={() => handleDeleteTask(task.id)}
                           className="px-2 py-0.5 rounded text-rose-600 hover:text-rose-800 hover:bg-rose-50 text-[10px] font-bold border border-rose-200 transition flex items-center gap-1 cursor-pointer shrink-0"
@@ -868,7 +881,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         >
                           <Trash2 className="w-3 h-3" />
                           <span>Eliminar</span>
-                        </button>
+                        </ActionButton>
                       </div>
 
                       {/* Botón Compacto WhatsApp Reporte al CEO y Correo */}
@@ -892,7 +905,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                           <span>📲 Reenviar Reporte al CEO (WhatsApp)</span>
                         </button>
 
-                        <button
+                        <ActionButton loading={handleNotifyEmailPending}
                           type="button"
                           onClick={() => handleNotifyEmail(task.id)}
                           disabled={sendingEmailId === task.id}
@@ -905,7 +918,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                             <Mail className="w-3 h-3 text-slate-500" />
                           )}
                           <span>Reenviar por Correo al CEO</span>
-                        </button>
+                        </ActionButton>
                       </div>
                     </div>
                   </div>
@@ -981,8 +994,8 @@ export default function TareasAdmin({ openNewModal = false }) {
 
             <form onSubmit={handleCreateTask} className="p-5 space-y-3.5 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Título de la Tarea *</label>
-                <input
+                <label htmlFor="tareas-title" className="block font-bold text-slate-700 mb-1">Título de la Tarea *</label>
+                <input id="tareas-title" name="tareas_title"
                   type="text"
                   required
                   value={newTask.title}
@@ -993,8 +1006,8 @@ export default function TareasAdmin({ openNewModal = false }) {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Descripción / Instrucciones</label>
-                <textarea
+                <label htmlFor="tareas-description" className="block font-bold text-slate-700 mb-1">Descripción / Instrucciones</label>
+                <textarea id="tareas-description" name="tareas_description"
                   rows="2"
                   value={newTask.description}
                   onChange={(e) => setNewTask({ ...newTask, description: e.target.value })}
@@ -1006,8 +1019,8 @@ export default function TareasAdmin({ openNewModal = false }) {
               {/* Selección de Administrador y Filtro Automático de Proyectos */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Administrador Asignado *</label>
-                  <select
+                  <label htmlFor="tareas-assigned-admin" className="block font-bold text-slate-700 mb-1">Administrador Asignado *</label>
+                  <select id="tareas-assigned-admin" name="tareas_assigned_admin"
                     required
                     value={newTask.assigned_to}
                     onChange={(e) => handleAdminChangeInModal(e.target.value)}
@@ -1026,7 +1039,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                   <div className="flex items-center justify-between mb-1">
                     <label className="block font-bold text-slate-700">Proyecto (Opcional)</label>
                   </div>
-                  <select
+                  <select id="tareas-project" name="tareas_project"
                     value={newTask.project_id}
                     onChange={(e) => setNewTask({ ...newTask, project_id: e.target.value })}
                     disabled={!newTask.assigned_to}
@@ -1059,8 +1072,8 @@ export default function TareasAdmin({ openNewModal = false }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Nivel de Prioridad *</label>
-                  <select
+                  <label htmlFor="tareas-priority" className="block font-bold text-slate-700 mb-1">Nivel de Prioridad *</label>
+                  <select id="tareas-priority" name="tareas_priority"
                     value={newTask.priority}
                     onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
                     className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 font-bold text-slate-800"
@@ -1072,8 +1085,8 @@ export default function TareasAdmin({ openNewModal = false }) {
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Fecha Límite</label>
-                  <input
+                  <label htmlFor="tareas-due-date" className="block font-bold text-slate-700 mb-1">Fecha Límite</label>
+                  <input id="tareas-due-date" name="tareas_due_date"
                     type="date"
                     value={newTask.due_date}
                     onChange={(e) => setNewTask({ ...newTask, due_date: e.target.value })}
@@ -1090,14 +1103,14 @@ export default function TareasAdmin({ openNewModal = false }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleCreateTaskPending}
                   type="submit"
                   disabled={submitting}
                   className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-md flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>Asignar Tarea</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>
@@ -1191,7 +1204,7 @@ export default function TareasAdmin({ openNewModal = false }) {
               </button>
 
               {/* Reenviar Correo SMTP */}
-              <button
+              <ActionButton loading={handleNotifyEmailPending}
                 type="button"
                 onClick={() => handleNotifyEmail(taskCompletedModal.id)}
                 disabled={sendingEmailId === taskCompletedModal.id}
@@ -1203,7 +1216,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                   <Mail className="w-3.5 h-3.5 text-slate-600" />
                 )}
                 <span>✉️ Reenviar Notificación por Correo al CEO</span>
-              </button>
+              </ActionButton>
 
               <button
                 type="button"
@@ -1227,6 +1240,8 @@ function TaskCardActive({
   badgeClass,
   onStatusChange,
   onDelete,
+  statusPending,
+  deletePending,
   isSuperAdmin,
   canManage,
   adminName,
@@ -1256,9 +1271,10 @@ function TaskCardActive({
               <span>{task.status}</span>
             </span>
           ) : canManage ? (
-            <select
+            <select id={`tareas-card-status-${task.id}`} name={`tareas_card_status_${task.id}`}
               value={task.status}
               onChange={(e) => onStatusChange(task.id, e.target.value)}
+                disabled={statusPending}
               className={`text-[10px] font-bold px-2 py-0.5 rounded-md border focus:outline-none cursor-pointer ${
                 task.status === 'Pendiente'
                   ? 'bg-amber-50 text-amber-800 border-amber-300'
@@ -1332,25 +1348,25 @@ function TaskCardActive({
               </div>
 
               {/* Únicamente el ícono del basurero para cancelar/eliminar la orden */}
-              <button
+              <ActionButton loading={deletePending}
                 type="button"
                 onClick={() => onDelete(task.id)}
                 title="Cancelar / Eliminar orden"
                 className="p-1.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition cursor-pointer shrink-0"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-              </button>
+              </ActionButton>
             </>
           ) : canManage ? (
             /* Botón Exclusivo para el Administrador Asignado */
-            <button
+            <ActionButton loading={statusPending}
               type="button"
               onClick={() => onStatusChange(task.id, 'Completada')}
               className="w-full py-1.5 px-2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer transition shadow-2xs"
             >
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
               <span>Marcar como Completada</span>
-            </button>
+            </ActionButton>
           ) : (
             <span className="text-[10px] text-slate-400 italic">Asignada a otro Administrador</span>
           )}

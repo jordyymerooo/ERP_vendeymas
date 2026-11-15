@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\LotController;
 use App\Http\Controllers\Api\LotDocumentController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\ReceiptSequenceController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\AuditLogController;
 use App\Http\Controllers\Api\LeadController;
@@ -34,6 +35,9 @@ Route::post('/login', [AuthController::class, 'login'])
     ->middleware('throttle:login')
     ->name('login');
 
+Route::post('/forgot-password-request', [AuthController::class, 'requestPasswordReset'])
+    ->middleware('throttle:login');
+
 // ==========================================================
 // RUTAS PROTEGIDAS CON LARAVEL SANCTUM (auth:sanctum + throttle:api + RoleSecurityGuard)
 // ==========================================================
@@ -44,12 +48,13 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
     Route::get('/user', function (Request $request) {
         return $request->user()->load('roles');
     });
+    Route::put('/profile', [UserController::class, 'updateProfile']);
     Route::get('/profile/signature', [UserController::class, 'getSignature']);
     Route::post('/profile/signature', [UserController::class, 'updateSignature']);
     Route::delete('/profile/signature', [UserController::class, 'deleteSignature']);
 
     // Centro de Mando e Indicadores
-    Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
+    Route::get('/alerts/delinquent', [DashboardController::class, 'delinquent']);
 
     // Endpoints de Proyectos
     Route::get('/projects', [ProjectController::class, 'index']);
@@ -62,6 +67,8 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
     Route::post('/projects/{id}/assign-admin', [ProjectController::class, 'assignAdmin']);
 
     // Endpoints de Lotes
+    Route::put('/lots/{id}', [LotController::class, 'update']);
+    Route::post('/projects/{id}/lots/bulk-update', [LotController::class, 'bulkUpdate']);
     Route::put('/lots/{id}/assign', [LotController::class, 'assignCustomer']);
     Route::put('/lots/{id}/release', [LotController::class, 'releaseLot']);
     Route::put('/lots/{id}/geojson', [LotController::class, 'updateGeojson']);
@@ -71,21 +78,29 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
     // Endpoints de Clientes (CRM)
     Route::get('/customers', [CustomerController::class, 'index']);
     Route::post('/customers', [CustomerController::class, 'store']);
+    Route::get('/customers/options', [CustomerController::class, 'options']);
     Route::get('/customers/{id}', [CustomerController::class, 'show']);
     Route::put('/customers/{id}', [CustomerController::class, 'update']);
     Route::delete('/customers/{id}', [CustomerController::class, 'destroy']);
 
     // Endpoints de Lectura de Usuarios (para selectores y asignaciones)
-    Route::get('/users', [UserController::class, 'index']);
-    Route::get('/users/{id}', [UserController::class, 'show']);
+    Route::get('/users/options', [UserController::class, 'options']);
 
     // ==========================================================
     // RUTAS EXCLUSIVAS PARA SUPER ADMINISTRADOR / CEO
     // ==========================================================
     Route::middleware(EnsureSuperAdmin::class)->group(function () {
+        Route::put('/receipt-sequences', [ReceiptSequenceController::class, 'update']);
+        Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
+        Route::get('/users', [UserController::class, 'index']);
+        Route::get('/users/{id}', [UserController::class, 'show']);
+        Route::post('/payments/{id}/void', [PaymentController::class, 'voidReceipt']);
+
         // Gestión de Usuarios (Crear, Editar, Eliminar y Asignar Proyectos)
+        Route::delete('/projects/{id}', [ProjectController::class, 'destroy']);
         Route::post('/users', [UserController::class, 'store']);
         Route::put('/users/{id}', [UserController::class, 'update']);
+        Route::post('/users/{id}/reset-password', [UserController::class, 'resetUserPassword']);
         Route::delete('/users/{id}', [UserController::class, 'destroy']);
         Route::post('/users/{id}/assign-projects', [UserController::class, 'assignProjects']);
 
@@ -110,11 +125,11 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
     Route::delete('/documents/{id}', [LotDocumentController::class, 'destroy']);
 
     // Endpoints de Pagos y Recibos
+    Route::get('/receipt-sequences', [ReceiptSequenceController::class, 'index']);
     Route::get('/payments', [PaymentController::class, 'index']);
     Route::get('/payments/export/excel', [PaymentController::class, 'exportExcel']);
     Route::get('/payments/export/pdf', [PaymentController::class, 'exportPdf']);
     Route::post('/payments', [PaymentController::class, 'store']);
-    Route::post('/payments/{id}/void', [PaymentController::class, 'voidReceipt']);
     Route::get('/payments/{id}/pdf', [PaymentController::class, 'downloadPdf']);
 
     // Pipeline Comercial / Leads (CRM de Ventas)

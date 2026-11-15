@@ -1,6 +1,8 @@
+import { getAuthenticatedRole, getHomeRouteByRole } from '../utils/roleRoutes';
 import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard,
   Map,
@@ -18,20 +20,9 @@ import {
   Landmark,
 } from 'lucide-react';
 
-const getStoredUser = () => {
-  try {
-    return JSON.parse(localStorage.getItem('user') || 'null');
-  } catch {
-    return null;
-  }
-};
-
 export default function Sidebar({ isOpen, onClose }) {
-  const [currentUser, setCurrentUser] = useState(getStoredUser);
-  const userRoles = Array.isArray(currentUser?.roles) ? currentUser.roles.map((role) => role.name) : [];
-  const userRole = userRoles.includes('Super Admin')
-    ? 'Super Admin'
-    : userRoles[0] || currentUser?.role || 'Usuario';
+  const { user: currentUser } = useAuth();
+  const userRole = getAuthenticatedRole(currentUser) || 'Usuario';
   const displayName = currentUser?.name || 'Usuario';
   const avatarUrl = currentUser?.avatar_url || currentUser?.profile_photo_url || null;
   const [moraCount, setMoraCount] = useState(0);
@@ -45,9 +36,6 @@ export default function Sidebar({ isOpen, onClose }) {
   });
 
   useEffect(() => {
-    const handleSync = () => {
-      setCurrentUser(getStoredUser());
-    };
     const handleTasksCountUpdated = (e) => {
       if (typeof e?.detail === 'number') {
         setPendingTasksCount(e.detail);
@@ -61,13 +49,9 @@ export default function Sidebar({ isOpen, onClose }) {
       }
     };
 
-    window.addEventListener('storage', handleSync);
-    window.addEventListener('auth-change', handleSync);
     window.addEventListener('tasks-count-updated', handleTasksCountUpdated);
 
     return () => {
-      window.removeEventListener('storage', handleSync);
-      window.removeEventListener('auth-change', handleSync);
       window.removeEventListener('tasks-count-updated', handleTasksCountUpdated);
     };
   }, []);
@@ -95,7 +79,7 @@ export default function Sidebar({ isOpen, onClose }) {
   const isSuperAdmin = userRole === 'Super Admin' || userRole === 'CEO / Gerente';
   const isAdministrador = userRole === 'Administrador';
   const isAsesor = userRole === 'Asesor Comercial';
-  const isTopografo = userRole === 'Topógrafo';
+  const isTopografo = ['Topógrafo', 'Topografo'].includes(userRole);
 
   // Construcción de la navegación adaptada por rol
   const getNavigationForRole = () => {
@@ -237,13 +221,13 @@ export default function Sidebar({ isOpen, onClose }) {
 
       {/* Aside Fijo */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 h-screen bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 select-none transform transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] h-dvh bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 select-none transform transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
           isOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
         }`}
       >
         {/* Cabecera / Identidad Corporativa Oficial */}
         <div className="h-20 flex items-center justify-between px-4 border-b border-slate-800 bg-slate-900/90">
-          <NavLink to="/" className="flex items-center py-2 group">
+          <NavLink to={getHomeRouteByRole(userRole)} onClick={onClose} className="flex items-center py-2 group">
             <img
               src="/logos/logo-dark-bg.png"
               alt="Vende & más | Hazlo ya, invierte"

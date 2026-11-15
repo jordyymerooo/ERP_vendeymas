@@ -21,7 +21,7 @@ class AuditLogController extends Controller
             ], 403);
         }
 
-        $query = AuditLog::with(['user.roles'])->orderBy('created_at', 'desc');
+        $query = AuditLog::with(['user:id,name,email', 'user.roles:id,name'])->latest('id');
 
         // Filtro por módulo si se proporciona
         if ($request->filled('module') && $request->input('module') !== 'TODOS') {
@@ -33,7 +33,7 @@ class AuditLogController extends Controller
             $search = $request->input('search');
             $query->where(function ($q) use ($search) {
                 $q->where('action', 'ilike', '%' . $search . '%')
-                  ->orWhere('ip_address', 'like', '%' . $search . '%')
+                  ->orWhereRaw('cast(ip_address as text) like ?', ['%' . $search . '%'])
                   ->orWhereHas('user', function ($u) use ($search) {
                       $u->where('name', 'ilike', '%' . $search . '%')
                         ->orWhere('email', 'ilike', '%' . $search . '%');
@@ -41,8 +41,10 @@ class AuditLogController extends Controller
             });
         }
 
-        $logs = $query->paginate(20);
+        $counts = (clone $query)->reorder()->toBase()
+            ->selectRaw('module, count(*) as count')->groupBy('module')->pluck('count', 'module');
+        $logs = $query->paginate($this->perPage($request))->withQueryString();
 
-        return response()->json($logs);
+        return response()->json([...$logs->toArray(), 'module_counts' => $counts]);
     }
 }

@@ -1,10 +1,16 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from './ActionButton';
+import { getAuthenticatedRole, getHomeRouteByRole } from '../utils/roleRoutes';
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import SignatureCanvas from 'react-signature-canvas';
+import { useAuth } from '../context/AuthContext';
+import EditProfileModal from './EditProfileModal';
 import {
   LogOut,
   User,
+  UserCog,
   Bell,
   ShieldCheck,
   UserCheck,
@@ -26,6 +32,9 @@ import {
 
 export default function Header({ onToggleSidebar }) {
   const navigate = useNavigate();
+  const { user: currentUser, updateUser } = useAuth();
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [profileSuccess, setProfileSuccess] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
@@ -53,15 +62,11 @@ export default function Header({ onToggleSidebar }) {
   const sigCanvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Leer información del usuario logueado desde localStorage
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const stored = localStorage.getItem('user');
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
-    }
-  });
+  useEffect(() => {
+    if (!profileSuccess) return;
+    const timeout = setTimeout(() => setProfileSuccess(false), 5000);
+    return () => clearTimeout(timeout);
+  }, [profileSuccess]);
 
   const [currentRole, setCurrentRole] = useState(() => {
     return localStorage.getItem('user_role') || 'Super Admin';
@@ -166,13 +171,7 @@ export default function Header({ onToggleSidebar }) {
     try {
       const res = await axios.get('/api/user');
       if (res.data) {
-        setCurrentUser((prev) => {
-          const merged = { ...prev, ...res.data };
-          try {
-            localStorage.setItem('user', JSON.stringify(merged));
-          } catch (e) {}
-          return merged;
-        });
+        updateUser(res.data, false);
       }
     } catch (e) {}
   };
@@ -187,8 +186,6 @@ export default function Header({ onToggleSidebar }) {
   useEffect(() => {
     const handleSync = () => {
       try {
-        const stored = localStorage.getItem('user');
-        setCurrentUser(stored ? JSON.parse(stored) : null);
         setCurrentRole(localStorage.getItem('user_role') || 'Super Admin');
       } catch (err) {
         console.error('Error sincronizando header:', err);
@@ -220,7 +217,7 @@ export default function Header({ onToggleSidebar }) {
     };
   }, []);
 
-  const handleNotificationClick = async (notif) => {
+  const [handleNotificationClick] = useSingleSubmit(async (notif) => {
     try {
       if (!notif.is_read) {
         await axios.post(`/api/notifications/${notif.id}/read`);
@@ -232,6 +229,7 @@ export default function Header({ onToggleSidebar }) {
         window.dispatchEvent(new Event('notifications-updated'));
       }
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al marcar notificación:', err);
     } finally {
       setIsNotificationsOpen(false);
@@ -239,9 +237,9 @@ export default function Header({ onToggleSidebar }) {
         navigate(notif.action_url);
       }
     }
-  };
+  });
 
-  const handleMarkAllAsRead = async () => {
+  const [handleMarkAllAsRead, handleMarkAllAsReadPending] = useSingleSubmit(async () => {
     setIsMarkingAllRead(true);
     try {
       const activeRole = localStorage.getItem('user_role') || currentRole || 'Super Admin';
@@ -267,11 +265,12 @@ export default function Header({ onToggleSidebar }) {
       }));
       window.dispatchEvent(new Event('notifications-updated'));
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al marcar todas como leídas:', err);
     } finally {
       setIsMarkingAllRead(false);
     }
-  };
+  });
 
   const isSuperAdmin = currentRole === 'Super Admin';
   const userName = currentUser?.name || 'Administrador';
@@ -305,11 +304,7 @@ export default function Header({ onToggleSidebar }) {
 
         // Si coincide con el usuario logueado en sesión, sincronizar
         if (currentUser && currentUser.id === uId) {
-          const updatedUser = { ...currentUser, signature_base64: sig };
-          try {
-            localStorage.setItem('user', JSON.stringify(updatedUser));
-          } catch (e) {}
-          setCurrentUser(updatedUser);
+          updateUser({ id: uId, signature_base64: sig }, false);
         }
       }
     } catch (err) {
@@ -325,22 +320,24 @@ export default function Header({ onToggleSidebar }) {
     fetchSignatureProfile();
   }, []);
 
-  const handleLogout = async () => {
+  const [handleLogout, handleLogoutPending] = useSingleSubmit(async () => {
     if (isLoggingOut) return;
     setIsLoggingOut(true);
 
     try {
       await axios.post('/api/logout');
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.warn('Advertencia al revocar token:', err);
     } finally {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
       localStorage.removeItem('user_role');
+      window.dispatchEvent(new Event('auth-change'));
       navigate('/login', { replace: true });
       setIsLoggingOut(false);
     }
-  };
+  });
 
   const handleOpenSignatureModal = () => {
     setIsDropdownOpen(false);
@@ -387,7 +384,7 @@ export default function Header({ onToggleSidebar }) {
     reader.readAsDataURL(file);
   };
 
-  const handleDeleteCurrentSignature = async () => {
+  const [handleDeleteCurrentSignature, handleDeleteCurrentSignaturePending] = useSingleSubmit(async () => {
     const targetName = effectiveSignatureUser.name || userName;
     if (!confirm(`¿Estás seguro de que deseas eliminar la firma digital de ${targetName}? Los próximos recibos se emitirán sin firma hasta que registres una nueva.`)) {
       return;
@@ -414,14 +411,7 @@ export default function Header({ onToggleSidebar }) {
       }));
 
       if (currentUser && (!uId || currentUser.id === uId)) {
-        const updatedUser = {
-          ...currentUser,
-          signature_base64: null,
-        };
-        try {
-          localStorage.setItem('user', JSON.stringify(updatedUser));
-        } catch (e) {}
-        setCurrentUser(updatedUser);
+        updateUser({ id: currentUser.id, signature_base64: null }, false);
       }
 
       window.dispatchEvent(new Event('auth-change'));
@@ -437,6 +427,7 @@ export default function Header({ onToggleSidebar }) {
         setSaveSuccessMsg(null);
       }, 3000);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error eliminando firma:', err);
       setSignatureError(
         err.response?.data?.message || 'Error al eliminar la firma digital. Intenta nuevamente.'
@@ -444,9 +435,9 @@ export default function Header({ onToggleSidebar }) {
     } finally {
       setIsDeletingSignature(false);
     }
-  };
+  });
 
-  const handleSaveSignature = async () => {
+  const [handleSaveSignature, handleSaveSignaturePending] = useSingleSubmit(async () => {
     let finalBase64 = null;
 
     if (signatureMode === 'draw') {
@@ -489,14 +480,7 @@ export default function Header({ onToggleSidebar }) {
       }));
 
       if (currentUser && (!uId || currentUser.id === uId)) {
-        const updatedUser = {
-          ...currentUser,
-          signature_base64: finalBase64,
-        };
-        try {
-          localStorage.setItem('user', JSON.stringify(updatedUser));
-        } catch (e) {}
-        setCurrentUser(updatedUser);
+        updateUser({ id: currentUser.id, signature_base64: finalBase64 }, false);
       }
 
       window.dispatchEvent(new Event('auth-change'));
@@ -507,6 +491,7 @@ export default function Header({ onToggleSidebar }) {
         setIsSignatureModalOpen(false);
       }, 1400);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error guardando firma:', err);
       setSignatureError(
         err.response?.data?.message || 'Hubo un error al guardar la firma digital. Intenta nuevamente.'
@@ -514,7 +499,7 @@ export default function Header({ onToggleSidebar }) {
     } finally {
       setIsSavingSignature(false);
     }
-  };
+  });
 
   return (
     <>
@@ -524,20 +509,20 @@ export default function Header({ onToggleSidebar }) {
           <button
             type="button"
             onClick={onToggleSidebar}
-            className="lg:hidden p-2 -ml-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition cursor-pointer"
+            className="lg:hidden min-h-[44px] min-w-[44px] p-2 -ml-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition cursor-pointer"
             title="Abrir menú de navegación"
           >
             <Menu className="w-5 h-5" />
           </button>
 
           {/* Logo oficial visible exclusivamente en dispositivos móviles */}
-          <div className="lg:hidden flex items-center">
+          <Link to={getHomeRouteByRole(getAuthenticatedRole(currentUser))} className="lg:hidden flex items-center">
             <img
               src="/logos/logo-transparent.png"
               alt="Vende & más"
               className="h-8 w-auto object-contain max-w-[130px]"
             />
-          </div>
+          </Link>
 
           <h2 className="hidden lg:block text-sm sm:text-base font-bold text-slate-900 tracking-tight">
             Gestión Inmobiliaria
@@ -602,14 +587,14 @@ export default function Header({ onToggleSidebar }) {
                       </span>
                     )}
                   </div>
-                  <button
+                  <ActionButton loading={handleMarkAllAsReadPending}
                     type="button"
                     onClick={handleMarkAllAsRead}
                     disabled={isMarkingAllRead || notificationsData.unread_count === 0}
                     className="text-[11px] font-semibold text-teal-600 hover:text-teal-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
                   >
                     {isMarkingAllRead ? 'Marcando...' : 'Marcar leídas'}
-                  </button>
+                  </ActionButton>
                 </div>
 
                 {/* Fila Fija Compacta de Alertas de Mora (Sin listar clientes) */}
@@ -807,6 +792,18 @@ export default function Header({ onToggleSidebar }) {
                 <div className="py-1">
                   <button
                     type="button"
+                    onClick={() => {
+                      setIsDropdownOpen(false);
+                      setProfileSuccess(false);
+                      setIsProfileOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-50 transition cursor-pointer text-left"
+                  >
+                    <UserCog className="w-4 h-4 text-teal-600 shrink-0" />
+                    Editar mi Perfil
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleOpenSignatureModal}
                     className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-50 transition cursor-pointer text-left"
                   >
@@ -822,7 +819,7 @@ export default function Header({ onToggleSidebar }) {
 
                 {/* Opción Cerrar Sesión */}
                 <div className="py-1">
-                  <button
+                  <ActionButton loading={handleLogoutPending}
                     type="button"
                     onClick={handleLogout}
                     disabled={isLoggingOut}
@@ -834,13 +831,31 @@ export default function Header({ onToggleSidebar }) {
                       <LogOut className="w-4 h-4 shrink-0" />
                     )}
                     <span>{isLoggingOut ? 'Cerrando sesión...' : 'Cerrar Sesión'}</span>
-                  </button>
+                  </ActionButton>
                 </div>
               </div>
             )}
           </div>
         </div>
       </header>
+
+      {isProfileOpen && (
+        <EditProfileModal
+          user={currentUser}
+          onClose={() => setIsProfileOpen(false)}
+          onSaved={(updatedUser) => {
+            updateUser(updatedUser);
+            setIsProfileOpen(false);
+            setProfileSuccess(true);
+          }}
+        />
+      )}
+      {profileSuccess && (
+        <div role="status" className="fixed right-4 top-20 z-50 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800 shadow-lg">
+          <CheckCircle2 className="w-4 h-4" />
+          Perfil actualizado con éxito.
+        </div>
+      )}
 
       {/* MODAL HÍBRIDO PARA CONFIGURACIÓN DE FIRMA DIGITAL DEL ASESOR */}
       {isSignatureModalOpen && (
@@ -901,7 +916,7 @@ export default function Header({ onToggleSidebar }) {
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                       <span>Firma Actual de: <strong>{effectiveSignatureUser.name || userName}</strong></span>
                     </span>
-                    <button
+                    <ActionButton loading={handleDeleteCurrentSignaturePending}
                       type="button"
                       onClick={handleDeleteCurrentSignature}
                       disabled={isDeletingSignature || isSavingSignature}
@@ -919,7 +934,7 @@ export default function Header({ onToggleSidebar }) {
                           <span>Eliminar Firma Actual</span>
                         </>
                       )}
-                    </button>
+                    </ActionButton>
                   </div>
 
                   <div className="bg-white border border-slate-200 rounded-lg p-2 flex items-center justify-center min-h-[70px]">
@@ -1038,6 +1053,7 @@ export default function Header({ onToggleSidebar }) {
                       onChange={handleImageFileChange}
                       className="hidden"
                       id="signature-file-upload-input"
+                      name="signature_file"
                     />
 
                     {!uploadedImageBase64 ? (
@@ -1133,7 +1149,7 @@ export default function Header({ onToggleSidebar }) {
                 >
                   Cancelar
                 </button>
-                <button
+                <ActionButton loading={handleSaveSignaturePending}
                   type="button"
                   onClick={handleSaveSignature}
                   disabled={isSavingSignature || isDeletingSignature}
@@ -1150,7 +1166,7 @@ export default function Header({ onToggleSidebar }) {
                       <span>Guardar Firma</span>
                     </>
                   )}
-                </button>
+                </ActionButton>
               </div>
             </div>
           </div>

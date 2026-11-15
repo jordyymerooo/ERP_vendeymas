@@ -66,26 +66,24 @@ class ChequeController extends Controller
         }
 
         // Resumen financiero global (o filtrado según periodo)
-        $summaryQuery = clone $query;
-        $totalEmitido = (float) (clone $summaryQuery)->where('status', 'Emitido')->sum('amount');
-        $countEmitido = (int) (clone $summaryQuery)->where('status', 'Emitido')->count();
+        $byStatus = (clone $query)->selectRaw('status, count(*) as count, sum(amount) as amount')
+            ->groupBy('status')->get()->keyBy('status');
+        $totalEmitido = (float) ($byStatus->get('Emitido')->amount ?? 0);
+        $totalCobrado = (float) ($byStatus->get('Cobrado')->amount ?? 0);
+        $totalAnulado = (float) ($byStatus->get('Anulado')->amount ?? 0);
+        $countEmitido = (int) ($byStatus->get('Emitido')->count ?? 0);
+        $countCobrado = (int) ($byStatus->get('Cobrado')->count ?? 0);
+        $countAnulado = (int) ($byStatus->get('Anulado')->count ?? 0);
+        $totalGeneral = $totalEmitido + $totalCobrado;
 
-        $totalCobrado = (float) (clone $summaryQuery)->where('status', 'Cobrado')->sum('amount');
-        $countCobrado = (int) (clone $summaryQuery)->where('status', 'Cobrado')->count();
-
-        $totalAnulado = (float) (clone $summaryQuery)->where('status', 'Anulado')->sum('amount');
-        $countAnulado = (int) (clone $summaryQuery)->where('status', 'Anulado')->count();
-
-        $totalGeneral = (float) (clone $summaryQuery)->whereIn('status', ['Emitido', 'Cobrado'])->sum('amount');
-
-        $cheques = $query->orderBy('issue_date', 'desc')->orderBy('id', 'desc')->paginate(15);
+        $cheques = $query->orderBy('issue_date', 'desc')->orderBy('id', 'desc')->paginate($this->perPage($request))->withQueryString();
 
         // Bancos disponibles para selector en frontend
         $availableBanks = Cheque::select('bank_name')->distinct()->pluck('bank_name');
 
         return response()->json([
             'success' => true,
-            'data' => $cheques,
+            ...$cheques->toArray(),
             'summary' => [
                 'total_emitido' => $totalEmitido,
                 'count_emitido' => $countEmitido,

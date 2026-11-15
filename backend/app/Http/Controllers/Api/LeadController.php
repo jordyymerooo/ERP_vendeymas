@@ -29,8 +29,8 @@ class LeadController extends Controller
         $user = $request->user();
         $isSuperAdmin = $this->checkIsSuperAdmin($user, $request);
 
-        $query = Lead::with(['project', 'customer', 'advisor:id,name,email'])
-            ->orderBy('created_at', 'desc');
+        $query = Lead::with(['project', 'customer', 'advisor:id,name'])
+            ->latest('created_at')->latest('id');
 
         // ==========================================================
         // REGLA ESTRICTA DE VISIBILIDAD / AISLAMIENTO POR ASESOR
@@ -57,25 +57,35 @@ class LeadController extends Controller
         if ($request->filled('search')) {
             $s = trim($request->search);
             $query->where(function ($q) use ($s) {
-                $q->where('name', 'like', "%{$s}%")
-                  ->orWhere('phone', 'like', "%{$s}%")
-                  ->orWhere('email', 'like', "%{$s}%");
+                $q->whereLike('name', "%{$s}%")
+                  ->orWhereLike('phone', "%{$s}%")
+                  ->orWhereLike('email', "%{$s}%");
             });
         }
 
-        $leads = $query->get();
-
-        // Resumen general de etapas del listado actual
+        $stageTotals = (clone $query)->reorder()->toBase()
+            ->selectRaw('stage, count(*) as count, sum(budget) as budget')
+            ->groupBy('stage')->get()->keyBy('stage');
+        $count = fn (string $stage) => (int) ($stageTotals->get($stage)->count ?? 0);
+        $total = (int) $stageTotals->sum('count');
         $stats = [
-            'total' => $leads->count(),
-            'nuevo' => $leads->where('stage', 'Nuevo Prospecto')->count(),
-            'visita' => $leads->where('stage', 'Visita Agendada')->count(),
-            'negociacion' => $leads->where('stage', 'En Negociación')->count(),
-            'ganado' => $leads->where('stage', 'Cierre Ganado')->count(),
-            'descartado' => $leads->where('stage', 'Descartado')->count(),
-            'activos' => $leads->whereNotIn('stage', ['Cierre Ganado', 'Descartado'])->count(),
-            'total_pipeline_value' => $leads->where('stage', '!=', 'Descartado')->sum('budget'),
+            'total' => $total,
+            'nuevo' => $count('Nuevo Prospecto'),
+            'visita' => $count('Visita Agendada'),
+            'negociacion' => $count('En Negociación'),
+            'ganado' => $count('Cierre Ganado'),
+            'descartado' => $count('Descartado'),
+            'activos' => $total - $count('Cierre Ganado') - $count('Descartado'),
+            'total_pipeline_value' => $stageTotals->except('Descartado')->sum('budget'),
         ];
+
+        if ($request->input('view') === 'discarded') {
+            $query->where('stage', 'Descartado');
+        } elseif ($request->input('view') === 'kanban') {
+            $query->where('stage', '!=', 'Descartado');
+        }
+
+        $leads = $query->paginate($this->perPage($request))->withQueryString();
 
         // ==========================================================
         // RESUMEN DE RENDIMIENTO POR ASESOR (Solo para Super Admin)
@@ -97,7 +107,7 @@ class LeadController extends Controller
             ")->groupBy('user_id')->get()->keyBy('user_id');
 
             // Filtrado estricto en BD: excluir por completo Administradores y Topógrafos
-            $allUsers = User::with('roles')
+            $allUsers = User::select('id', 'name', 'email')->with('roles:id,name')
                 ->whereDoesntHave('roles', function ($q) {
                     $q->whereIn('name', ['Administrador', 'Topógrafo']);
                 })
@@ -152,7 +162,7 @@ class LeadController extends Controller
         $responseData = [
             'success' => true,
             'is_super_admin' => $isSuperAdmin,
-            'data' => $leads,
+            ...$leads->toArray(),
             'stats' => $stats,
         ];
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Helpers\RoleSecurity;
 use App\Models\Customer;
 use App\Models\Lot;
 use App\Models\Project;
@@ -11,10 +12,103 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class LotController extends Controller
 {
+    private const LOT_VALUES = [
+        'area' => 'required|numeric|gt:0|max:99999999.99|decimal:0,2',
+        'price' => 'required|numeric|gt:0|max:9999999999.99|decimal:0,2',
+    ];
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'lot_number' => 'required|string|max:50',
+            ...self::LOT_VALUES,
+        ]);
+        $lot = DB::transaction(function () use ($request, $id, $validated) {
+            $lot = Lot::lockForUpdate()->findOrFail($id);
+            $this->authorizeInventoryEdit($request, $lot->project_id);
+
+            return $this->updateLotValues($lot, $validated);
+        }, 3);
+
+        $this->forgetInventoryCache();
+
+        return response()->json(['success' => true, 'data' => $lot]);
+    }
+
+    public function bulkUpdate(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'from_lot' => 'required|integer|min:1',
+            'to_lot' => 'required|integer|gte:from_lot',
+            ...self::LOT_VALUES,
+        ]);
+        $count = DB::transaction(function () use ($request, $id, $validated) {
+            $this->authorizeInventoryEdit($request, $id);
+            $project = Project::lockForUpdate()->findOrFail($id);
+            // Match the numeric part of names such as Lote 15, Lote 15A and Norte 15.
+            $lots = $project->lots()
+                ->whereRaw("cast(substring(trim(lot_number), '([0-9]+)[[:alpha:]]*$') as numeric) between ? and ?",
+                    [$validated['from_lot'], $validated['to_lot']])
+                ->orderBy('id')->lockForUpdate()->get();
+            if ($lots->isEmpty()) {
+                throw ValidationException::withMessages(['from_lot' => 'No hay lotes numerados dentro del rango indicado.']);
+            }
+            foreach ($lots as $lot) {
+                $this->updateLotValues($lot, $validated);
+            }
+
+            return $lots->count();
+        }, 3);
+
+        $this->forgetInventoryCache();
+
+        return response()->json(['success' => true, 'updated_count' => $count]);
+    }
+
+    private function authorizeInventoryEdit(Request $request, int $projectId): void
+    {
+        $user = $request->user();
+        abort_unless(
+            RoleSecurity::isRealSuperAdmin($user)
+                || ($user->hasRole('Administrador') && $user->assignedProjects()->whereKey($projectId)->exists()),
+            403,
+            'Solo Gerencia o un administrador asignado puede editar este inventario.'
+        );
+    }
+
+    private function updateLotValues(Lot $lot, array $validated): Lot
+    {
+        $paid = (float) $lot->payments()->where('status', '!=', 'Anulado')->sum('amount_paid');
+        $price = (float) $validated['price'];
+        if (in_array($lot->status, ['Vendido', 'Pagado / Vendido'], true) && $price < $paid) {
+            throw ValidationException::withMessages([
+                'price' => "El precio de {$lot->lot_number} no puede ser menor al total abonado de USD ".number_format($paid, 2, '.', '').'.',
+            ]);
+        }
+        $balance = max(0, round($price - $paid, 2));
+        $lot->update([
+            'lot_number' => $validated['lot_number'] ?? $lot->lot_number,
+            'area_m2' => $validated['area'],
+            'total_price' => $validated['price'],
+            'status' => $lot->status === 'Pagado / Vendido' && $balance > 0 ? 'Vendido' : $lot->status,
+        ]);
+        $lot->setAttribute('debt_balance', $balance);
+
+        return $lot;
+    }
+
+    private function forgetInventoryCache(): void
+    {
+        Cache::forget('system_mora_count');
+        Cache::forget('dashboard_stats');
+    }
+
     /**
      * Crea un nuevo lote real en la tabla lots para el proyecto especificado.
      */

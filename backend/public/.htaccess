@@ -5,6 +5,9 @@
 
     RewriteEngine On
 
+    # Receipt PDFs are served only by the authenticated API.
+    RewriteRule ^storage/(recibos|receipts)(/|$) - [F,NC,L]
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]

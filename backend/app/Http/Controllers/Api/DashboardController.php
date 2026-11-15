@@ -6,17 +6,79 @@ use App\Http\Controllers\Controller;
 use App\Models\Lot;
 use App\Models\Payment;
 use App\Models\Project;
+use App\Services\DelinquentLots;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
+    public function delinquent(Request $request, DelinquentLots $delinquentLots): JsonResponse
+    {
+        $all = $delinquentLots->query()
+            ->join('customers', 'customers.id', '=', 'balances.customer_id')
+            ->join('projects', 'projects.id', '=', 'balances.project_id');
+
+        $user = $request->user();
+        if (!$user->hasRole('Super Admin')) {
+            match ($user->roles->first()?->name) {
+                'Administrador' => $all->whereIn('balances.project_id', $user->assignedProjects()->select('projects.id')),
+                'Asesor Comercial' => $all->where('customers.assigned_user_id', $user->id),
+                default => abort(403),
+            };
+        }
+
+        $projects = (clone $all)->groupBy('projects.name')->orderBy('projects.name')
+            ->selectRaw('projects.name, count(*) as count')->get();
+        $query = clone $all;
+        if ($request->filled('project') && $request->input('project') !== 'TODOS') {
+            $query->where('projects.name', $request->input('project'));
+        }
+        if ($request->filled('search')) {
+            $term = '%'.trim($request->input('search')).'%';
+            $query->where(fn ($match) => $match->whereLike('customers.name', $term)
+                ->orWhereLike('customers.id_card', $term)->orWhereLike('customers.phone', $term)
+                ->orWhereLike('balances.lot_number', $term));
+        }
+
+        $filteredAmount = (float) (clone $query)->sum('overdue_balance');
+        $sort = match ($request->input('sort')) {
+            'monto_asc' => ['overdue_balance', 'asc'],
+            'cuotas_desc' => ['overdue_installments', 'desc'],
+            'nombre_asc' => ['customers.name', 'asc'],
+            default => ['overdue_balance', 'desc'],
+        };
+        $page = $query->select([
+            'balances.id as lot_id', 'balances.lot_number', 'balances.project_id',
+            'balances.customer_id', 'balances.installment_amount', 'balances.payment_day',
+            'balances.actual_paid', 'balances.total_price', 'projects.name as project_name',
+            'customers.name as customer_name', 'customers.phone as customer_phone',
+            'customers.id_card as customer_id_card', 'balances.overdue_balance as overdue_amount',
+        ])->selectRaw('greatest(1, ceil(overdue_balance / greatest(1, installment_amount))) as overdue_installments')
+            ->orderBy(...$sort)->orderBy('balances.id')
+            ->paginate($this->perPage($request))->withQueryString()
+            ->through(function ($lot) {
+                $lot->overdue_installments = (int) $lot->overdue_installments;
+                $lot->project_slug = Str::slug($lot->project_name);
+                $lot->mora_status = 'EN MORA';
+                return $lot;
+            });
+
+        return response()->json([
+            ...$page->toArray(),
+            'projects' => $projects,
+            'delinquent_count' => (int) $projects->sum('count'),
+            'total_mora_amount' => (float) $all->sum('overdue_balance'),
+            'filtered_mora_amount' => $filteredAmount,
+        ]);
+    }
+
     /**
      * Retorna estadísticas en tiempo real calculadas directamente desde PostgreSQL,
      * incluyendo alertas de mora con los clientes y montos vencidos.
      */
-    public function stats(): JsonResponse
+    public function stats(DelinquentLots $delinquentLots): JsonResponse
     {
         // 1. Métricas de Lotes
         $totalLots = Lot::count();
@@ -47,39 +109,8 @@ class DashboardController extends Controller
 
         $totalDebtPending = max(0, $totalPortfolioValue - $totalCollectedAllTime);
 
-        // 3. Alertas de Mora Reales en PostgreSQL
-        $soldLotsRecords = Lot::with(['customer', 'project', 'payments'])
-            ->where('status', 'Vendido')
-            ->whereNotNull('customer_id')
-            ->get();
-
-        $delinquentCustomers = [];
-        $totalMoraAmount = 0;
-
-        foreach ($soldLotsRecords as $lot) {
-            $moraInfo = $lot->calculateMoraStatus();
-            if ($moraInfo['status'] === 'EN MORA') {
-                $totalMoraAmount += $moraInfo['overdue_amount'];
-                $delinquentCustomers[] = [
-                    'lot_id' => $lot->id,
-                    'lot_number' => $lot->lot_number,
-                    'project_id' => $lot->project_id,
-                    'project_name' => $lot->project?->name ?? 'Proyecto',
-                    'project_slug' => Str::slug($lot->project?->name ?? 'proyecto'),
-                    'customer_id' => $lot->customer_id,
-                    'customer_name' => $lot->customer?->name ?? 'Cliente',
-                    'customer_id_card' => $lot->customer?->id_card ?? 'N/A',
-                    'customer_phone' => $lot->customer?->phone ?? 'N/A',
-                    'overdue_amount' => $moraInfo['overdue_amount'],
-                    'overdue_installments' => $moraInfo['overdue_installments'],
-                    'installment_amount' => $moraInfo['installment_amount'],
-                    'payment_day' => $moraInfo['payment_day'],
-                    'actual_paid' => $moraInfo['actual_paid'],
-                    'total_price' => (float) $lot->total_price,
-                    'mora_status' => 'EN MORA',
-                ];
-            }
-        }
+        $mora = $delinquentLots->query()
+            ->selectRaw('count(*) as count, coalesce(sum(overdue_balance), 0) as amount')->first();
 
         // 4. Resumen y Avance de Ventas por Proyecto
         $projects = Project::with(['administrators:id,name,email'])->withCount([
@@ -94,8 +125,8 @@ class DashboardController extends Controller
                 $q->where('status', 'Reservado');
             },
         ])->with(['lots' => function ($q) {
-            $q->where('status', 'Vendido')->whereNotNull('customer_id')->with(['payments' => function ($pq) {
-                $pq->where('status', 'Válido');
+            $q->select('id', 'project_id', 'total_price')->where('status', 'Vendido')->whereNotNull('customer_id')->with(['payments' => function ($pq) {
+                $pq->where('status', 'Válido')->select('id', 'lot_id', 'amount_paid', 'status');
             }]);
         }])->orderBy('id', 'asc')->get();
 
@@ -164,9 +195,8 @@ class DashboardController extends Controller
                 'total_collected_all_time' => $totalCollectedAllTime,
                 'total_receipts_all_time' => $totalReceiptsAllTime,
                 'total_debt_pending' => $totalDebtPending,
-                'delinquent_customers' => $delinquentCustomers,
-                'delinquent_count' => count($delinquentCustomers),
-                'total_mora_amount' => $totalMoraAmount,
+                'delinquent_count' => (int) $mora->count,
+                'total_mora_amount' => (float) $mora->amount,
                 'projects_summary' => $projectsSummary,
                 'recent_payments' => $recentPayments,
             ],

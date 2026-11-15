@@ -1,7 +1,11 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import axios from 'axios';
-import SignatureCanvas from 'react-signature-canvas';
+import SignaturePadField from '../components/SignaturePadField';
+import EmitterSignaturePreview from '../components/EmitterSignaturePreview';
+import { receiptPdfUrl } from '../utils/receiptPdfUrl';
 import {
   ArrowLeft,
   Receipt,
@@ -10,7 +14,6 @@ import {
   User,
   MapPin,
   CheckCircle,
-  RotateCcw,
   Building2,
   Loader2,
   AlertTriangle,
@@ -57,7 +60,6 @@ export default function ProyectoPagar() {
   const [bankReference, setBankReference] = useState('');
   const [concepto, setConcepto] = useState('Abono correspondiente a cuota de terreno');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [hasSignature, setHasSignature] = useState(false);
 
   const isBankMethod = metodoPago === 'Transferencia Bancaria' || metodoPago === 'Depósito en Cuenta' || metodoPago === 'Depósito' || metodoPago?.toLowerCase().includes('transferencia') || metodoPago?.toLowerCase().includes('depósito') || metodoPago?.toLowerCase().includes('deposito');
 
@@ -157,13 +159,11 @@ export default function ProyectoPagar() {
   const handleClearSignature = () => {
     if (sigCanvasRef.current) {
       sigCanvasRef.current.clear();
-      setHasSignature(false);
     }
   };
 
   // Registrar pago y emitir recibo oficial
-  const handleProcesarPago = async (e) => {
-    e.preventDefault();
+  const [handleProcesarPago, handleProcesarPagoPending] = useSingleSubmit(async (e) => {
 
     if (!selectedLotId) {
       alert('Por favor selecciona un lote para aplicar el pago.');
@@ -193,7 +193,7 @@ export default function ProyectoPagar() {
         amount_paid: numMonto,
         payment_method: metodoPago,
         bank_reference: isBankMethod ? bankReference.trim() : null,
-        signature_base64: firmaBase64,
+        customer_signature: firmaBase64,
       });
 
       const paymentData = res.data?.data || res.data?.payment;
@@ -223,7 +223,7 @@ export default function ProyectoPagar() {
         lotNumber: currentLot?.lot_number || 'Lote',
         cashierName: currentUserName,
         dateTime: new Date().toLocaleString('es-EC', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        receiptUrl: `${(receiptUrl || '').replace(/https?:\/\/[^/]+/, `http://${window.location.hostname}:8000`) || `http://${window.location.hostname}:8000/api/payments/${paymentData?.id}/pdf`}?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`,
+        receiptUrl: receiptPdfUrl(receiptUrl || `/api/payments/${paymentData?.id}/pdf`),
       });
 
       setBankReference('');
@@ -234,20 +234,21 @@ export default function ProyectoPagar() {
       // Recargar datos actualizados
       await fetchData();
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al procesar el pago en el backend:', err);
       const msg = err.response?.data?.message || 'Error al registrar el pago.';
       alert(msg);
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, { form: true });
 
   const projectName = projectInfo?.name || projectInfo?.nombre || id?.replace(/-/g, ' ').toUpperCase();
 
   return (
     <div className="space-y-6 animate-fade-in w-full pb-8">
       {/* ================= CABECERA DE LA VISTA DEDICADA ================= */}
-      <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -294,7 +295,7 @@ export default function ProyectoPagar() {
       {/* ================= MODAL / BANNER DE CONFIRMACIÓN DE PAGO ================= */}
       {pagoExitoso && (
         <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-100/60 border border-emerald-300 rounded-lg p-6 shadow-xs animate-fade-in">
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+          <div className="flex flex-col items-start gap-5">
             <div className="flex items-start gap-4">
               <div className="w-10 h-10 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
                 <CheckCircle className="w-6 h-6" />
@@ -319,7 +320,7 @@ export default function ProyectoPagar() {
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row flex-wrap items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap gap-3 w-full">
               {/* Botón 1: Enviar Recibo al Cliente (WhatsApp) */}
               <button
                 type="button"
@@ -340,7 +341,7 @@ export default function ProyectoPagar() {
                   });
                   openWhatsApp(pagoExitoso.customerPhone, msg);
                 }}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition text-xs sm:text-sm cursor-pointer shadow-xs"
+                className="w-full lg:w-auto min-h-[46px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition text-xs sm:text-sm cursor-pointer shadow-xs"
                 title="Enviar comprobante oficial al WhatsApp del cliente"
               >
                 <MessageCircle className="w-4 h-4" />
@@ -366,7 +367,7 @@ export default function ProyectoPagar() {
                   });
                   openWhatsApp(DEFAULT_CEO_PHONE, msg);
                 }}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md font-bold text-emerald-900 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 transition text-xs sm:text-sm cursor-pointer shadow-xs"
+                className="w-full lg:w-auto min-h-[46px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md font-bold text-emerald-900 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 transition text-xs sm:text-sm cursor-pointer shadow-xs"
                 title="Notificar este ingreso de caja al WhatsApp del CEO"
               >
                 <MessageCircle className="w-4 h-4 text-emerald-700" />
@@ -378,7 +379,7 @@ export default function ProyectoPagar() {
                 href={pagoExitoso.receiptUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md font-medium text-white bg-slate-900 hover:bg-slate-800 transition text-xs sm:text-sm cursor-pointer shadow-xs"
+                className="w-full lg:w-auto min-h-[46px] inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md font-medium text-white bg-slate-900 hover:bg-slate-800 transition text-xs sm:text-sm cursor-pointer shadow-xs"
               >
                 <Download className="w-4 h-4" />
                 <span>Abrir Recibo (PDF)</span>
@@ -388,9 +389,9 @@ export default function ProyectoPagar() {
               <button
                 type="button"
                 onClick={() => setPagoExitoso(null)}
-                className="w-full sm:w-auto px-3 py-2.5 rounded-md text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900 transition cursor-pointer"
+                className="w-full lg:w-auto min-h-[46px] px-3 py-2.5 rounded-md text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900 transition cursor-pointer"
               >
-                Registrar Otro Pago
+                Nuevo Cobro
               </button>
             </div>
           </div>
@@ -409,10 +410,10 @@ export default function ProyectoPagar() {
             {/* Tarjeta de Selección de Lote */}
             <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                <label htmlFor="proyecto-pago-lot" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                   Seleccionar Lote a Cobrar
                 </label>
-                <select
+                <select id="proyecto-pago-lot" name="proyecto_pago_lot"
                   value={selectedLotId}
                   onChange={(e) => handleLotChange(e.target.value)}
                   className="w-full px-3.5 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition cursor-pointer shadow-sm"
@@ -688,7 +689,7 @@ export default function ProyectoPagar() {
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400 font-extrabold text-lg">
                       $
                     </div>
-                    <input
+                    <input id="proyecto-pago-amount" name="proyecto_pago_amount"
                       type="number"
                       step="any"
                       min="0.01"
@@ -737,12 +738,12 @@ export default function ProyectoPagar() {
                 </div>
 
                 {/* Forma de Pago */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                    <label htmlFor="proyecto-pago-payment-method" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                       Forma de Pago *
                     </label>
-                    <select
+                    <select id="proyecto-pago-payment-method" name="proyecto_pago_payment_method"
                       value={metodoPago}
                       onChange={(e) => setMetodoPago(e.target.value)}
                       className="w-full px-3.5 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition cursor-pointer"
@@ -771,7 +772,7 @@ export default function ProyectoPagar() {
                     <label className="block text-xs font-bold text-amber-950 uppercase tracking-wider">
                       N° de Comprobante / Referencia Bancaria <span className="text-rose-600">*</span>
                     </label>
-                    <input
+                    <input id="proyecto-pago-bank-reference" name="proyecto_pago_bank_reference"
                       type="text"
                       required
                       value={bankReference}
@@ -793,10 +794,10 @@ export default function ProyectoPagar() {
 
                 {/* Concepto del Recibo */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                  <label htmlFor="proyecto-pago-concept" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                     Por Concepto de
                   </label>
-                  <input
+                  <input id="proyecto-pago-concept" name="proyecto_pago_concept"
                     type="text"
                     value={concepto}
                     onChange={(e) => setConcepto(e.target.value)}
@@ -808,39 +809,8 @@ export default function ProyectoPagar() {
                   </p>
                 </div>
 
-                {/* Pad de Firma Digital del Cliente / Solicitante */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                      Firma del Cliente / Solicitante (Pad Táctil / Ratón)
-                    </label>
-                    <button
-                      type="button"
-                      onClick={handleClearSignature}
-                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-rose-600 transition cursor-pointer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Limpiar Firma</span>
-                    </button>
-                  </div>
-
-                  <div className="border border-dashed border-slate-300 rounded-lg bg-slate-50 overflow-hidden relative">
-                    <SignatureCanvas
-                      ref={sigCanvasRef}
-                      onEnd={() => setHasSignature(true)}
-                      penColor="#0f172a"
-                      canvasProps={{
-                        className: 'w-full h-40 bg-transparent cursor-crosshair',
-                      }}
-                    />
-                    <div className="absolute bottom-2.5 right-3 pointer-events-none text-[10px] text-slate-400 uppercase tracking-widest font-mono select-none">
-                      PAD DE FIRMA DEL CLIENTE &bull; VENDE & MÁS
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-1.5">
-                    Firma del cliente / solicitante que entrega el dinero. La firma del emisor (Asesor, Administrador, Topógrafo o Gerente) se estampará automáticamente en el recibo PDF desde su propio perfil de usuario.
-                  </p>
-                </div>
+                <SignaturePadField key={selectedLotId} ref={sigCanvasRef} />
+                <EmitterSignaturePreview />
 
                 {/* Botón Principal de Envío */}
                 <div className="pt-2 space-y-2">
@@ -850,10 +820,15 @@ export default function ProyectoPagar() {
                       <span>Debe ingresar el número de comprobante o referencia bancaria</span>
                     </div>
                   )}
-                  <button
+                </div>
+                <div className="sticky bottom-0 z-10 shrink-0 border-t bg-white p-3 sm:p-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+                  <button type="button" disabled={isSubmitting} onClick={() => navigate(`/proyectos/${id}/clientes`)} className="w-full sm:w-auto min-h-[46px] text-base font-semibold rounded-md px-4 text-slate-700 hover:bg-slate-100">
+                    Cancelar
+                  </button>
+                  <ActionButton loading={handleProcesarPagoPending}
                     type="submit"
                     disabled={isSubmitting || !selectedLotId || (isBankMethod && (!bankReference || bankReference.trim().length < 3))}
-                    className="w-full py-3.5 px-6 rounded-md font-bold text-white bg-slate-900 hover:bg-slate-800 active:bg-black shadow-xs transition flex items-center justify-center gap-2 text-sm sm:text-base cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full sm:w-auto min-h-[46px] py-2 px-4 rounded-md font-semibold text-white bg-slate-900 hover:bg-slate-800 active:bg-black shadow-xs transition flex items-center justify-center gap-2 text-base cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isSubmitting ? (
                       <>
@@ -868,7 +843,7 @@ export default function ProyectoPagar() {
                         </span>
                       </>
                     )}
-                  </button>
+                  </ActionButton>
                 </div>
               </form>
             </div>

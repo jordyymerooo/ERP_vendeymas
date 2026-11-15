@@ -1,3 +1,5 @@
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -29,7 +31,7 @@ export default function Dashboard() {
   const [downloadingBackup, setDownloadingBackup] = useState(false);
   const initialStatsRequested = useRef(false);
 
-  const downloadBackup = async () => {
+  const [downloadBackup, downloadBackupPending] = useSingleSubmit(async () => {
     setDownloadingBackup(true);
     try {
       const response = await axios.get('/api/system/backup', { responseType: 'blob' });
@@ -45,12 +47,13 @@ export default function Dashboard() {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (error) {
+      if (error?.isDuplicateBlocked) return;
       console.error('Error al descargar el respaldo:', error);
       alert(error.response?.data?.message || 'No se pudo descargar el respaldo disponible.');
     } finally {
       setDownloadingBackup(false);
     }
-  };
+  });
 
   const fetchStats = async () => {
     setLoading(true);
@@ -77,7 +80,7 @@ export default function Dashboard() {
   const soldLots = stats?.sold_lots || 0;
   const availablePercent = totalLots > 0 ? Math.round((availableLots / totalLots) * 100) : 0;
   const soldPercent = totalLots > 0 ? Math.round((soldLots / totalLots) * 100) : 0;
-  const delinquentCustomers = stats?.delinquent_customers || [];
+  const delinquentCount = stats?.delinquent_count ?? 0;
   const totalMoraAmount = stats?.total_mora_amount || 0;
 
   // ==============================================================
@@ -145,7 +148,7 @@ export default function Dashboard() {
 
         <div className="flex items-center gap-3">
           {(localStorage.getItem('user_role') || '').toLowerCase().includes('super') && (
-            <button
+            <ActionButton loading={downloadBackupPending}
               type="button"
               onClick={downloadBackup}
               disabled={downloadingBackup}
@@ -153,7 +156,7 @@ export default function Dashboard() {
             >
               {downloadingBackup ? <Loader2 className="w-4 h-4 animate-spin" /> : <DatabaseBackup className="w-4 h-4" />}
               <span>📥 Descargar Respaldo del Día</span>
-            </button>
+            </ActionButton>
           )}
           <div className="flex items-center gap-2 text-xs font-medium text-slate-600 bg-white px-3 py-1.5 rounded-md border border-slate-200 shadow-xs">
             <Clock className="w-3.5 h-3.5 text-slate-500" />
@@ -217,7 +220,7 @@ export default function Dashboard() {
           {/* ============================================================== */}
           {/* 2. BANNER / TARJETA COMPACTA DE ALERTA DE MORA                */}
           {/* ============================================================== */}
-          {delinquentCustomers.length > 0 ? (
+          {delinquentCount > 0 ? (
             <div className="bg-red-50/70 border border-red-200 rounded-lg p-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
               <div className="flex items-center gap-3.5">
                 <div className="w-10 h-10 rounded-lg bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shrink-0">
@@ -229,7 +232,7 @@ export default function Dashboard() {
                       Atención Requerida
                     </span>
                     <span className="text-xs font-semibold text-slate-800">
-                      Existen <strong className="text-red-700 font-bold">{delinquentCustomers.length} clientes</strong> con cuotas vencidas en cartera
+                      Existen <strong className="text-red-700 font-bold">{delinquentCount} clientes</strong> con cuotas vencidas en cartera
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 mt-1">
@@ -246,7 +249,7 @@ export default function Dashboard() {
                 onClick={() => navigate('/alertas-mora')}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition cursor-pointer shadow-xs shrink-0 w-full sm:w-auto justify-center"
               >
-                <span>Ver y Gestionar Alertas de Mora ({delinquentCustomers.length})</span>
+                <span>Ver y Gestionar Alertas de Mora ({delinquentCount})</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>

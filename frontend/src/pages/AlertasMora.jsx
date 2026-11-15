@@ -1,4 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import { useAuth } from '../context/AuthContext';
+import { getAuthenticatedRole, getHomeRouteByRole } from '../utils/roleRoutes';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -11,8 +16,6 @@ import {
   Receipt,
   ArrowRight,
   ShieldCheck,
-  ChevronLeft,
-  ChevronRight,
   RefreshCw,
   Layers,
   ArrowLeft,
@@ -23,6 +26,7 @@ import {
 
 export default function AlertasMora() {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -32,99 +36,45 @@ export default function AlertasMora() {
   const [selectedProject, setSelectedProject] = useState('TODOS');
   const [sortBy, setSortBy] = useState('monto_desc'); // 'monto_desc' | 'monto_asc' | 'cuotas_desc' | 'nombre_asc'
 
-  // Paginación (12 tarjetas por página)
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 12;
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
+  const [error, setError] = useState('');
 
-  // Cargar métricas y clientes morosos
-  const fetchStats = async () => {
+  const [fetchStats, fetchStatsPending] = useSingleSubmit(async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
+    setError('');
     try {
-      const res = await axios.get('/api/dashboard/stats');
-      if (res.data.success && res.data.stats) {
-        setStats(res.data.stats);
+      const { data } = await axios.get('/api/alerts/delinquent', {
+        params: { page, per_page: perPage, search: searchTerm.trim(), project: selectedProject, sort: sortBy },
+      });
+      if (requestId !== listRequest.current) return;
+      if (page > data.last_page) {
+        await fetchStats(data.last_page);
+        return;
       }
+      setStats(data);
     } catch (err) {
-      console.error('Error al cargar datos de alertas de mora:', err);
+      if (err?.isDuplicateBlocked) return;
+      if (requestId !== listRequest.current) return;
+      setError('No se pudieron cargar las alertas de mora.');
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
-  };
+  });
 
   useEffect(() => {
-    fetchStats();
-  }, []);
+    listRequest.current++;
+    const timer = setTimeout(() => fetchStats(), 250);
+    return () => clearTimeout(timer);
+  }, [searchTerm, selectedProject, sortBy, perPage]);
 
-  // Lista cruda de clientes en mora
-  const delinquentCustomers = stats?.delinquent_customers || [];
-  const totalMoraAmount = stats?.total_mora_amount || 0;
-
-  // Lista de proyectos disponibles para el filtro
-  const projectsList = useMemo(() => {
-    const set = new Set();
-    delinquentCustomers.forEach((d) => {
-      if (d.project_name) set.add(d.project_name);
-    });
-    return Array.from(set).sort();
-  }, [delinquentCustomers]);
-
-  // Filtrado y Ordenamiento en memoria (reactivo en tiempo real)
-  const filteredAndSortedList = useMemo(() => {
-    let result = [...delinquentCustomers];
-
-    // 1. Filtro por Proyecto
-    if (selectedProject !== 'TODOS') {
-      result = result.filter((d) => d.project_name === selectedProject);
-    }
-
-    // 2. Filtro por Buscador (Nombre, Cédula o Lote)
-    if (searchTerm.trim()) {
-      const q = searchTerm.toLowerCase().trim();
-      result = result.filter(
-        (d) =>
-          d.customer_name?.toLowerCase().includes(q) ||
-          d.customer_id_card?.toLowerCase().includes(q) ||
-          d.lot_number?.toLowerCase().includes(q) ||
-          d.customer_phone?.toLowerCase().includes(q)
-      );
-    }
-
-    // 3. Ordenamiento
-    result.sort((a, b) => {
-      if (sortBy === 'monto_desc') {
-        return (Number(b.overdue_amount) || 0) - (Number(a.overdue_amount) || 0);
-      }
-      if (sortBy === 'monto_asc') {
-        return (Number(a.overdue_amount) || 0) - (Number(b.overdue_amount) || 0);
-      }
-      if (sortBy === 'cuotas_desc') {
-        return (Number(b.overdue_installments) || 0) - (Number(a.overdue_installments) || 0);
-      }
-      if (sortBy === 'nombre_asc') {
-        return (a.customer_name || '').localeCompare(b.customer_name || '');
-      }
-      return 0;
-    });
-
-    return result;
-  }, [delinquentCustomers, selectedProject, searchTerm, sortBy]);
-
-  // Reiniciar a página 1 cuando cambia algún filtro
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchTerm, selectedProject, sortBy]);
-
-  // Cálculo de Paginación
-  const totalItems = filteredAndSortedList.length;
-  const totalPages = Math.ceil(totalItems / itemsPerPage) || 1;
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
-  const currentItems = filteredAndSortedList.slice(startIndex, endIndex);
-
-  // Suma de mora de los elementos actualmente filtrados
-  const filteredMoraSum = useMemo(() => {
-    return filteredAndSortedList.reduce((acc, curr) => acc + (Number(curr.overdue_amount) || 0), 0);
-  }, [filteredAndSortedList]);
+  const delinquentCount = stats?.delinquent_count ?? 0;
+  const totalMoraAmount = stats?.total_mora_amount ?? 0;
+  const projectsList = stats?.projects ?? [];
+  const totalItems = stats?.total ?? 0;
+  const currentItems = stats?.data ?? [];
+  const filteredMoraSum = stats?.filtered_mora_amount ?? 0;
 
   return (
     <div className="space-y-6 animate-fade-in w-full pb-10">
@@ -133,9 +83,9 @@ export default function AlertasMora() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate(getHomeRouteByRole(getAuthenticatedRole(user)))}
             className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 border border-slate-200 transition cursor-pointer"
-            title="Volver al Centro de Mando"
+            title="Volver al inicio"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
@@ -150,7 +100,7 @@ export default function AlertasMora() {
                 Control de Cobranza & Cartera
               </span>
               <span className="text-xs font-bold text-slate-500">
-                &bull; {delinquentCustomers.length} en mora
+                &bull; {delinquentCount} en mora
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mt-0.5">
@@ -175,15 +125,15 @@ export default function AlertasMora() {
             </div>
           </div>
 
-          <button
+          <ActionButton loading={fetchStatsPending}
             type="button"
-            onClick={fetchStats}
+            onClick={() => fetchStats(stats?.current_page ?? 1)}
             disabled={loading}
             className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-md font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 transition text-xs shrink-0 cursor-pointer shadow-xs disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-slate-600' : ''}`} />
             <span>Actualizar</span>
-          </button>
+          </ActionButton>
         </div>
       </div>
 
@@ -192,7 +142,7 @@ export default function AlertasMora() {
         {/* Buscador en Tiempo Real */}
         <div className="relative w-full sm:w-80">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <input id="mora-search" name="mora_search"
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -215,27 +165,22 @@ export default function AlertasMora() {
           {/* Selector de Proyecto */}
           <div className="flex items-center gap-1.5 text-xs text-slate-600">
             <Building2 className="w-3.5 h-3.5 text-slate-400" />
-            <select
+            <select id="mora-project" name="mora_project"
               value={selectedProject}
               onChange={(e) => setSelectedProject(e.target.value)}
               className="px-2.5 py-2 text-xs rounded-md border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer"
             >
-              <option value="TODOS">Todos los Proyectos ({delinquentCustomers.length})</option>
-              {projectsList.map((p) => {
-                const count = delinquentCustomers.filter((d) => d.project_name === p).length;
-                return (
-                  <option key={p} value={p}>
-                    {p} ({count})
-                  </option>
-                );
-              })}
+              <option value="TODOS">Todos los Proyectos ({delinquentCount})</option>
+              {projectsList.map(({ name, count }) => (
+                <option key={name} value={name}>{name} ({count})</option>
+              ))}
             </select>
           </div>
 
           {/* Selector de Orden */}
           <div className="flex items-center gap-1.5 text-xs text-slate-600">
             <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
-            <select
+            <select id="mora-sort" name="mora_sort"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
               className="px-2.5 py-2 text-xs rounded-md border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer"
@@ -252,9 +197,7 @@ export default function AlertasMora() {
       {/* Subbarra informativa de resultados */}
       <div className="flex items-center justify-between text-xs text-slate-500 px-1">
         <div>
-          Mostrando <span className="font-bold text-slate-900">{totalItems === 0 ? 0 : startIndex + 1}</span> a{' '}
-          <span className="font-bold text-slate-900">{endIndex}</span> de{' '}
-          <span className="font-bold text-slate-900">{totalItems}</span> casos encontrados
+          <span>{totalItems} casos encontrados</span>
           {selectedProject !== 'TODOS' && <span> en <strong className="text-slate-800">{selectedProject}</strong></span>}
         </div>
         {totalItems > 0 && (
@@ -276,12 +219,12 @@ export default function AlertasMora() {
             <ShieldCheck className="w-6 h-6" />
           </div>
           <h3 className="text-base font-bold text-slate-900">
-            {delinquentCustomers.length === 0
+            {delinquentCount === 0
               ? '¡Excelente! Cartera totalmente al día'
               : 'No se encontraron clientes con los filtros aplicados'}
           </h3>
           <p className="text-xs text-slate-500 max-w-md">
-            {delinquentCustomers.length === 0
+            {delinquentCount === 0
               ? 'No existen cuotas vencidas en ninguno de los proyectos inmobiliarios.'
               : 'Prueba cambiando el término de búsqueda o seleccionando "Todos los Proyectos".'}
           </p>
@@ -382,41 +325,8 @@ export default function AlertasMora() {
         </div>
       )}
 
-      {/* ================= CONTROLES DE PAGINACIÓN ================= */}
-      {totalPages > 1 && (
-        <div className="p-4 bg-white rounded-lg border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-          <div>
-            Página <strong className="text-slate-900">{currentPage}</strong> de{' '}
-            <strong className="text-slate-900">{totalPages}</strong> &bull; Total: {totalItems} alertas
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium cursor-pointer transition shadow-xs"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Anterior</span>
-            </button>
-
-            <span className="font-bold text-slate-800 px-2">
-              Página {currentPage} de {totalPages}
-            </span>
-
-            <button
-              type="button"
-              disabled={currentPage >= totalPages}
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium cursor-pointer transition shadow-xs"
-            >
-              <span>Siguiente</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
+      {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+      <Pagination pagination={stats} perPage={perPage} onPageChange={fetchStats} onPerPageChange={setPerPage} loading={loading} />
     </div>
   );
 }

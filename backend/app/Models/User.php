@@ -28,6 +28,8 @@ class User extends Authenticatable
         'phone',
         'password',
         'signature_base64',
+        'password_reset_requested',
+        'password_reset_requested_at',
     ];
 
     /**
@@ -50,6 +52,8 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'password_reset_requested' => 'boolean',
+            'password_reset_requested_at' => 'datetime',
         ];
     }
 

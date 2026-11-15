@@ -1,4 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import useSingleSubmit from '../hooks/useSingleSubmit';
+import ActionButton from '../components/ActionButton';
+import Pagination from '../components/Pagination';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -54,6 +57,8 @@ export default function Cheques() {
     total_general: 0,
   });
   const [availableBanks, setAvailableBanks] = useState([]);
+  const listRequest = useRef(0);
+  const [perPage, setPerPage] = useState(15);
   const [pagination, setPagination] = useState({
     current_page: 1,
     last_page: 1,
@@ -97,11 +102,13 @@ export default function Cheques() {
 
   // Cargar lista de cheques y métricas
   const fetchCheques = async (page = 1) => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
       const res = await axios.get('/api/cheques', {
         params: {
           page,
+          per_page: perPage,
           search: searchTerm || undefined,
           bank_name: bankFilter !== 'TODOS' ? bankFilter : undefined,
           status: statusFilter !== 'TODOS' ? statusFilter : undefined,
@@ -109,9 +116,14 @@ export default function Cheques() {
           end_date: endDate || undefined,
         },
       });
+      if (requestId !== listRequest.current) return;
+      if (page > res.data.last_page) {
+        await fetchCheques(res.data.last_page);
+        return;
+      }
 
       if (res.data?.success) {
-        setCheques(res.data.data.data || []);
+        setCheques(res.data.data || []);
         setSummary(
           res.data.summary || {
             total_emitido: 0,
@@ -124,19 +136,16 @@ export default function Cheques() {
           }
         );
         setAvailableBanks(res.data.available_banks || []);
-        setPagination({
-          current_page: res.data.data.current_page || 1,
-          last_page: res.data.data.last_page || 1,
-          total: res.data.data.total || 0,
-        });
+        setPagination(res.data);
       }
     } catch (err) {
+      if (requestId !== listRequest.current) return;
       console.error('Error al cargar cheques:', err);
       if (err.response?.status === 403) {
         navigate('/dashboard', { replace: true });
       }
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
@@ -145,7 +154,7 @@ export default function Cheques() {
       fetchCheques(1);
     }, 250);
     return () => clearTimeout(timeout);
-  }, [searchTerm, bankFilter, statusFilter, startDate, endDate]);
+  }, [searchTerm, bankFilter, statusFilter, startDate, endDate, perPage]);
 
   const handleOpenCreateModal = () => {
     setEditingCheque(null);
@@ -177,8 +186,7 @@ export default function Cheques() {
     setIsModalOpen(true);
   };
 
-  const handleSaveCheque = async (e) => {
-    e.preventDefault();
+  const [handleSaveCheque, handleSaveChequePending] = useSingleSubmit(async (e) => {
     setFormError(null);
 
     if (!formData.bank_name.trim()) {
@@ -214,6 +222,7 @@ export default function Cheques() {
       setIsModalOpen(false);
       fetchCheques(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al guardar cheque:', err);
       setFormError(
         err.response?.data?.message || 'Error al procesar el registro del cheque. Verifique los datos.'
@@ -221,9 +230,9 @@ export default function Cheques() {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, { form: true });
 
-  const handleChangeStatus = async (cheque, nextStatus) => {
+  const [handleChangeStatus, handleChangeStatusPending] = useSingleSubmit(async (cheque, nextStatus) => {
     const actionWord = nextStatus === 'Cobrado' ? 'marcar como COBRADO' : 'ANULAR';
     if (!confirm(`¿Confirma que desea ${actionWord} el cheque N° ${cheque.cheque_number} por $${Number(cheque.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} USD?`)) {
       return;
@@ -236,12 +245,13 @@ export default function Cheques() {
       showSuccessMessage(`Cheque N° ${cheque.cheque_number} actualizado a estado '${nextStatus}'.`);
       fetchCheques(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al actualizar estado:', err);
       alert(err.response?.data?.message || 'Error al actualizar el estado del cheque.');
     }
-  };
+  });
 
-  const handleDeleteCheque = async (cheque) => {
+  const [handleDeleteCheque, handleDeleteChequePending] = useSingleSubmit(async (cheque) => {
     if (!confirm(`¿Está completamente seguro de ELIMINAR el cheque N° ${cheque.cheque_number} a favor de ${cheque.payee}? Esta acción quedará registrada en auditoría.`)) {
       return;
     }
@@ -251,10 +261,11 @@ export default function Cheques() {
       showSuccessMessage(`Cheque N° ${cheque.cheque_number} eliminado del sistema.`);
       fetchCheques(pagination.current_page);
     } catch (err) {
+      if (err?.isDuplicateBlocked) return;
       console.error('Error al eliminar cheque:', err);
       alert(err.response?.data?.message || 'Error al eliminar el cheque.');
     }
-  };
+  });
 
   const showSuccessMessage = (msg) => {
     setActionSuccessMsg(msg);
@@ -432,7 +443,7 @@ export default function Cheques() {
           {/* Input de Búsqueda */}
           <div className="md:col-span-4 relative">
             <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-            <input
+            <input id="cheques-search" name="cheques_search"
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -443,7 +454,7 @@ export default function Cheques() {
 
           {/* Filtro Banco / Cooperativa */}
           <div className="md:col-span-3">
-            <select
+            <select id="cheques-filter-bank" name="cheques_filter_bank"
               value={bankFilter}
               onChange={(e) => setBankFilter(e.target.value)}
               className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 transition cursor-pointer"
@@ -459,7 +470,7 @@ export default function Cheques() {
 
           {/* Filtro Estado */}
           <div className="md:col-span-2">
-            <select
+            <select id="cheques-filter-status" name="cheques_filter_status"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
               className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 transition cursor-pointer"
@@ -473,7 +484,7 @@ export default function Cheques() {
 
           {/* Rango de Fechas */}
           <div className="md:col-span-3 flex items-center gap-2">
-            <input
+            <input id="cheques-fecha-desde" name="cheques_fecha_desde"
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
@@ -481,7 +492,7 @@ export default function Cheques() {
               className="w-full px-2 py-2 text-xs rounded-lg border border-slate-200 bg-slate-50/50 focus:bg-white text-slate-700"
             />
             <span className="text-slate-400 text-xs">a</span>
-            <input
+            <input id="cheques-fecha-hasta" name="cheques_fecha_hasta"
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
@@ -618,38 +629,38 @@ export default function Cheques() {
                         <div className="flex items-center justify-center gap-1.5">
                           {/* Cambiar Estado a Cobrado */}
                           {isEmitido && (
-                            <button
+                            <ActionButton loading={handleChangeStatusPending}
                               type="button"
                               onClick={() => handleChangeStatus(c, 'Cobrado')}
                               className="p-1.5 rounded-md hover:bg-emerald-100 text-emerald-700 transition cursor-pointer"
                               title="Marcar como Cobrado"
                             >
                               <Check className="w-4 h-4" />
-                            </button>
+                            </ActionButton>
                           )}
 
                           {/* Cambiar Estado a Anulado */}
                           {!isAnulado && (
-                            <button
+                            <ActionButton loading={handleChangeStatusPending}
                               type="button"
                               onClick={() => handleChangeStatus(c, 'Anulado')}
                               className="p-1.5 rounded-md hover:bg-rose-100 text-rose-600 transition cursor-pointer"
                               title="Anular Cheque"
                             >
                               <Ban className="w-4 h-4" />
-                            </button>
+                            </ActionButton>
                           )}
 
                           {/* Revertir Anulado a Emitido si aplica */}
                           {isAnulado && (
-                            <button
+                            <ActionButton loading={handleChangeStatusPending}
                               type="button"
                               onClick={() => handleChangeStatus(c, 'Emitido')}
                               className="p-1.5 rounded-md hover:bg-blue-100 text-blue-600 transition cursor-pointer"
                               title="Revertir a Emitido"
                             >
                               <RotateCcw className="w-4 h-4" />
-                            </button>
+                            </ActionButton>
                           )}
 
                           {/* Editar */}
@@ -663,14 +674,14 @@ export default function Cheques() {
                           </button>
 
                           {/* Eliminar */}
-                          <button
+                          <ActionButton loading={handleDeleteChequePending}
                             type="button"
                             onClick={() => handleDeleteCheque(c)}
                             className="p-1.5 rounded-md hover:bg-rose-100 text-rose-600 transition cursor-pointer"
                             title="Eliminar cheque permanentemente"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          </ActionButton>
                         </div>
                       </td>
                     </tr>
@@ -681,33 +692,7 @@ export default function Cheques() {
           </table>
         </div>
 
-        {/* Paginación */}
-        {pagination.last_page > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50 text-xs">
-            <span className="text-slate-500">
-              Página <strong className="text-slate-800">{pagination.current_page}</strong> de{' '}
-              <strong className="text-slate-800">{pagination.last_page}</strong> ({pagination.total} cheques)
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => fetchCheques(pagination.current_page - 1)}
-                disabled={pagination.current_page <= 1 || loading}
-                className="px-3 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-50 cursor-pointer font-medium"
-              >
-                Anterior
-              </button>
-              <button
-                type="button"
-                onClick={() => fetchCheques(pagination.current_page + 1)}
-                disabled={pagination.current_page >= pagination.last_page || loading}
-                className="px-3 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-50 cursor-pointer font-medium"
-              >
-                Siguiente
-              </button>
-            </div>
-          </div>
-        )}
+        <Pagination pagination={pagination} perPage={perPage} onPageChange={fetchCheques} onPerPageChange={setPerPage} loading={loading} />
       </div>
 
       {/* ================= MODAL: EMITIR O EDITAR CHEQUE ================= */}
@@ -754,7 +739,7 @@ export default function Cheques() {
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   Banco / Cooperativa <span className="text-rose-600">*</span>
                 </label>
-                <input
+                <input id="cheques-bank" name="cheques_bank"
                   type="text"
                   list="bank-suggestions"
                   value={formData.bank_name}
@@ -776,7 +761,7 @@ export default function Cheques() {
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                     N° de Cheque <span className="text-rose-600">*</span>
                   </label>
-                  <input
+                  <input id="cheques-number" name="cheques_number"
                     type="text"
                     value={formData.cheque_number}
                     onChange={(e) => setFormData({ ...formData, cheque_number: e.target.value })}
@@ -790,7 +775,7 @@ export default function Cheques() {
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                     Fecha de Emisión <span className="text-rose-600">*</span>
                   </label>
-                  <input
+                  <input id="cheques-issue-date" name="cheques_issue_date"
                     type="date"
                     value={formData.issue_date}
                     onChange={(e) => setFormData({ ...formData, issue_date: e.target.value })}
@@ -806,7 +791,7 @@ export default function Cheques() {
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                     A favor de (Beneficiario) <span className="text-rose-600">*</span>
                   </label>
-                  <input
+                  <input id="cheques-payee" name="cheques_payee"
                     type="text"
                     value={formData.payee}
                     onChange={(e) => setFormData({ ...formData, payee: e.target.value })}
@@ -822,7 +807,7 @@ export default function Cheques() {
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">$</span>
-                    <input
+                    <input id="cheques-amount" name="cheques_amount"
                       type="number"
                       step="0.01"
                       min="0.01"
@@ -841,7 +826,7 @@ export default function Cheques() {
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   Concepto del Cheque <span className="text-rose-600">*</span>
                 </label>
-                <textarea
+                <textarea id="cheques-concept" name="cheques_concept"
                   rows="3"
                   value={formData.concept}
                   onChange={(e) => setFormData({ ...formData, concept: e.target.value })}
@@ -853,10 +838,10 @@ export default function Cheques() {
 
               {/* Estado (solo en edición o selección opcional) */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                <label htmlFor="cheques-status" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   Estado del Cheque
                 </label>
-                <select
+                <select id="cheques-status" name="cheques_status"
                   value={formData.status}
                   onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                   className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 cursor-pointer"
@@ -878,14 +863,14 @@ export default function Cheques() {
                   Cancelar
                 </button>
 
-                <button
+                <ActionButton loading={handleSaveChequePending}
                   type="submit"
                   disabled={isSubmitting}
                   className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition cursor-pointer disabled:opacity-50"
                 >
                   {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{editingCheque ? 'Actualizar Cheque' : 'Emitir Cheque'}</span>
-                </button>
+                </ActionButton>
               </div>
             </form>
           </div>

@@ -30,6 +30,8 @@ class Payment extends Model
         'signature_base64',
         'customer_signature',
         'receipt_pdf_url',
+        'pdf_path',
+        'pdf_generated_at',
     ];
 
     protected $casts = [
@@ -37,6 +39,7 @@ class Payment extends Model
         'debt_balance' => 'decimal:2',
         'book_sequence' => 'integer',
         'voided_at' => 'datetime',
+        'pdf_generated_at' => 'datetime',
     ];
 
     /**
