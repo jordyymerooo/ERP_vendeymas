@@ -1,0 +1,4 @@
+/.env
+/.env.docker*
+!/.env.docker.example
+/local-backups/

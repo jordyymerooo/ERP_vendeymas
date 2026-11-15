@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { authenticatedApiUrl } from '../utils/receiptPdfUrl';
 import {
   FileSpreadsheet,
   Download,
@@ -51,9 +52,7 @@ export default function AmortizationModal({ isOpen, onClose, lotId, customerName
 
   if (!isOpen) return null;
 
-  const pdfUrl = `http://${window.location.hostname}:8000/api/lots/${lotId}/amortization-pdf?token=${encodeURIComponent(
-    localStorage.getItem('auth_token') || ''
-  )}`;
+  const pdfUrl = authenticatedApiUrl(`/api/lots/${lotId}/amortization-pdf`);
 
   const rows = data?.rows || [];
   const filteredRows = rows.filter((r) => {

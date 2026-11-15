@@ -1,0 +1,129 @@
+name: sistema-inmo-local
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  build:
+    context: ./backend
+  image: ${COMPOSE_PROJECT_NAME:-sistema-inmo-local}-php:local
+  init: true
+  restart: unless-stopped
+  environment:
+    APP_NAME: "Vende y Mas"
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Genera APP_KEY en el archivo .env.docker}
+    APP_URL: ${APP_URL:-http://localhost:8080}
+    APP_SCHEDULE_TIMEZONE: ${APP_SCHEDULE_TIMEZONE:-America/Guayaquil}
+    DB_CONNECTION: pgsql
+    DB_HOST: db
+    DB_PORT: "5432"
+    DB_DATABASE: ${DB_DATABASE:-sistema_inmo}
+    DB_USERNAME: ${DB_USERNAME:-inmo_app}
+    DB_PASSWORD: ${DB_PASSWORD:?Define DB_PASSWORD en el archivo .env.docker}
+    CACHE_STORE: database
+    QUEUE_CONNECTION: database
+    DB_QUEUE_RETRY_AFTER: "150"
+    SESSION_DRIVER: database
+    SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+    LOG_CHANNEL: stderr
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    MAIL_MAILER: ${MAIL_MAILER:-log}
+    MAIL_HOST: ${MAIL_HOST:-}
+    MAIL_PORT: ${MAIL_PORT:-587}
+    MAIL_USERNAME: ${MAIL_USERNAME:-}
+    MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+    MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-erp@example.test}
+    MAIL_FROM_NAME: "Vende y Mas"
+  volumes:
+    - storage:/var/www/html/storage
+    - ./deploy:/opt/erp:ro
+  networks:
+    - web
+    - data
+  logging: *logging
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Define POSTGRES_ADMIN_PASSWORD en el archivo .env.docker}
+      APP_DB_NAME: ${DB_DATABASE:-sistema_inmo}
+      APP_DB_USER: ${DB_USERNAME:-inmo_app}
+      APP_DB_PASSWORD: ${DB_PASSWORD:?Define DB_PASSWORD en el archivo .env.docker}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$APP_DB_PASSWORD\" psql -h 127.0.0.1 -U \"$$APP_DB_USER\" -d \"$$APP_DB_NAME\" -Atqc 'SELECT 1' | grep -qx 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  app:
+    <<: *app
+    healthcheck:
+      test: ["CMD-SHELL", "SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -qx pong"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    <<: *app
+    command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--timeout=120"]
+    stop_grace_period: 2m15s
+    depends_on:
+      app:
+        condition: service_healthy
+
+  scheduler:
+    <<: *app
+    command: ["php", "artisan", "schedule:work"]
+    stop_grace_period: 2m
+    depends_on:
+      app:
+        condition: service_healthy
+
+  nginx:
+    build:
+      context: ./frontend
+    image: ${COMPOSE_PROJECT_NAME:-sistema-inmo-local}-nginx:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${ERP_BIND_ADDRESS:-127.0.0.1}:${ERP_PORT:-8080}:80"
+    networks:
+      - web
+    logging: *logging
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/up && wget -q --spider http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  web:
+  data:
+    internal: true
+
+volumes:
+  postgres:
+  storage:

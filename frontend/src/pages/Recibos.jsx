@@ -1,4 +1,4 @@
-import { receiptPdfUrl } from '../utils/receiptPdfUrl';
+import { authenticatedApiUrl, receiptPdfUrl } from '../utils/receiptPdfUrl';
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import ReceiptSequenceDialog from '../components/ReceiptSequenceDialog';
@@ -298,8 +298,6 @@ export default function Recibos({ openDirectPaymentModal = false }) {
   // Generador de URLs para descargas de Excel y PDF
   const buildExportUrl = (format = 'excel') => {
     const params = new URLSearchParams();
-    const token = localStorage.getItem('auth_token') || '';
-    if (token) params.append('token', token);
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
     if (selectedProject) params.append('project', selectedProject);
@@ -309,7 +307,7 @@ export default function Recibos({ openDirectPaymentModal = false }) {
     if (searchTerm.trim()) params.append('search', searchTerm.trim());
 
     const endpoint = format === 'excel' ? '/api/payments/export/excel' : '/api/payments/export/pdf';
-    return `http://${window.location.hostname}:8000${endpoint}?${params.toString()}`;
+    return authenticatedApiUrl(`${endpoint}?${params.toString()}`);
   };
 
   // Refrescar tabla cuando se emite un pago exitoso

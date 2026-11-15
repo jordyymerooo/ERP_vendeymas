@@ -6,14 +6,18 @@ use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class SystemBackupController extends Controller
 {
     public function downloadBackup(Request $request): BinaryFileResponse|\Illuminate\Http\JsonResponse
     {
-        $backupDirectory = storage_path('app/Laravel');
+        $backupDirectory = Storage::disk('local')->path(config('backup.backup.name'));
         $files = File::glob($backupDirectory . DIRECTORY_SEPARATOR . '*.zip');
+        if (empty($files)) {
+            $files = File::glob(storage_path('app/Laravel/*.zip'));
+        }
 
         if (empty($files)) {
             return response()->json([
