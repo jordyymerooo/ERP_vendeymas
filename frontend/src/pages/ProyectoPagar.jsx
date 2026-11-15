@@ -5,7 +5,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import axios from 'axios';
 import SignaturePadField from '../components/SignaturePadField';
 import EmitterSignaturePreview from '../components/EmitterSignaturePreview';
-import { receiptPdfUrl } from '../utils/receiptPdfUrl';
+import { authenticatedApiUrl, receiptPdfUrl } from '../utils/receiptPdfUrl';
 import {
   ArrowLeft,
   Receipt,
@@ -572,7 +572,7 @@ export default function ProyectoPagar() {
                 </button>
                 {currentLot?.id && (
                   <a
-                    href={`http://${window.location.hostname}:8000/api/lots/${currentLot.id}/amortization-pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`}
+                    href={authenticatedApiUrl(`/api/lots/${currentLot.id}/amortization-pdf`)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-2xs cursor-pointer shrink-0"
@@ -641,7 +641,7 @@ export default function ProyectoPagar() {
                             ${Number(p.amount_paid).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                           </span>
                           <a
-                            href={`http://${window.location.hostname}:8000/api/payments/${p.id}/pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`}
+                            href={receiptPdfUrl(`/api/payments/${p.id}/pdf`)}
                             target="_blank"
                             rel="noreferrer"
                             className="p-1.5 rounded-lg text-cyan-700 hover:bg-cyan-100 transition"

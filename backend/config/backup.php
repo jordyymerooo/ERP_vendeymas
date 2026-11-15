@@ -17,10 +17,8 @@ return [
                 'pgsql',
             ],
         ],
-    ],
-    'destination' => [
-        'disks' => [
-            'local',
+        'destination' => [
+            'disks' => ['local'],
         ],
     ],
 ];

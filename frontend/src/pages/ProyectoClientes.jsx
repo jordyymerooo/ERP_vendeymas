@@ -1,4 +1,4 @@
-import { receiptPdfUrl } from '../utils/receiptPdfUrl';
+import { authenticatedApiUrl, receiptPdfUrl } from '../utils/receiptPdfUrl';
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import React, { useState, useRef, useEffect } from 'react';
@@ -1186,7 +1186,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
                             <span>Cronograma de Cuotas</span>
                           </button>
                           <a
-                            href={`http://${window.location.hostname}:8000/api/lots/${selectedCliente.lots?.[0]?.id || selectedLotId}/amortization-pdf?token=${encodeURIComponent(localStorage.getItem('auth_token') || '')}`}
+                            href={authenticatedApiUrl(`/api/lots/${selectedCliente.lots?.[0]?.id || selectedLotId}/amortization-pdf`)}
                             target="_blank"
                             rel="noreferrer"
                             className="px-2.5 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-200/70 border-l border-indigo-200 transition cursor-pointer flex items-center gap-1"
@@ -1431,7 +1431,7 @@ export default function ProyectoClientes({ defaultTab = 'lotes' }) {
 
                             <div className="flex items-center gap-1 shrink-0">
                               <a
-                                href={doc.file_url ? doc.file_url.replace(/https?:\/\/[^\/]+/, `http://${window.location.hostname}:8000`) : '#'}
+                                href={authenticatedApiUrl(`/api/documents/${doc.id}/download`)}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="p-1.5 rounded-lg text-slate-600 hover:text-indigo-600 hover:bg-white transition border border-transparent hover:border-slate-200 shadow-sm"
