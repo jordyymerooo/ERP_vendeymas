@@ -46,7 +46,8 @@ RUN sed -i 's/\r$//' /usr/local/bin/inmobiliaria-entrypoint \
     && chmod 0755 /var/www/html \
     && install -d -m 0755 -o www-data -g www-data storage storage/app storage/app/public \
     && install -d -m 0770 -o www-data -g www-data \
-        bootstrap/cache storage/app/private storage/framework storage/framework/cache storage/framework/cache/data \
+        bootstrap/cache storage/app/private storage/app/public/recibos storage/app/backup-temp \
+        storage/framework storage/framework/cache storage/framework/cache/data \
         storage/framework/sessions storage/framework/views storage/logs \
     && gosu www-data php artisan package:discover --no-interaction
 
