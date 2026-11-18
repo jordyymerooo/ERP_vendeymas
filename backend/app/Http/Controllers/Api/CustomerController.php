@@ -29,7 +29,7 @@ class CustomerController extends Controller
         ])->with([
             'lots:id,project_id,customer_id,lot_number,total_price,status',
             'lots.project:id,name,location',
-            'advisor:id,name,email',
+            'advisor:id,name,email,is_active,deleted_at',
         ]));
 
         // Búsqueda por término
@@ -129,7 +129,7 @@ class CustomerController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $customer->load('advisor:id,name,email'),
+            'data' => $customer->load('advisor:id,name,email,is_active,deleted_at'),
         ], 201);
     }
 
@@ -138,7 +138,7 @@ class CustomerController extends Controller
      */
     public function show(string|int $id): JsonResponse
     {
-        $customer = Customer::with(['lots.project', 'lots.payments', 'advisor:id,name,email'])->findOrFail($id);
+        $customer = Customer::with(['lots.project', 'lots.payments', 'advisor:id,name,email,is_active,deleted_at'])->findOrFail($id);
 
         return response()->json([
             'success' => true,
@@ -185,7 +185,7 @@ class CustomerController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Cliente actualizado con éxito en la base de datos.',
-            'data' => $customer->load(['lots.project', 'advisor:id,name,email']),
+            'data' => $customer->load(['lots.project', 'advisor:id,name,email,is_active,deleted_at']),
         ]);
     }
 

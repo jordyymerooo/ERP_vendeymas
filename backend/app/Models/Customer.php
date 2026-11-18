@@ -32,7 +32,7 @@ class Customer extends Model
      */
     public function advisor(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'assigned_user_id');
+        return $this->belongsTo(User::class, 'assigned_user_id')->withTrashed();
     }
 
     /**

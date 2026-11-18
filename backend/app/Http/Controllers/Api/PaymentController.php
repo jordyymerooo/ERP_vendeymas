@@ -38,8 +38,8 @@ class PaymentController extends Controller
             'deed.project:id,name',
             'deed.customer:id,name,id_card,phone,email',
             'topographyJob:id,client_name,client_phone,service_type',
-            'cashier:id,name',
-            'voidedByUser:id,name'
+            'cashier:id,name,is_active,deleted_at',
+            'voidedByUser:id,name,is_active,deleted_at'
         ]);
 
         $this->scopeReceiptBook($query, $request);
@@ -312,6 +312,7 @@ class PaymentController extends Controller
                 'customer_phone' => $customerPhone,
                 'customer_email' => $payment->lot?->customer?->email ?? $payment->deed?->customer?->email ?? null,
                 'cashier_name' => $payment->cashier?->name ?? 'Asesor Autorizado',
+                'cashier' => $payment->cashier?->only(['id', 'name', 'is_active', 'deleted_at']),
                 'pdf_url' => url('/api/payments/' . $payment->id . '/pdf'),
             ];
         });

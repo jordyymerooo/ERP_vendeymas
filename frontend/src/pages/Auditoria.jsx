@@ -1,6 +1,7 @@
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import Pagination from '../components/Pagination';
+import InactiveUserBadge from '../components/InactiveUserBadge';
 import React, { useRef, useState, useEffect } from 'react';
 import axios from 'axios';
 import {
@@ -515,6 +516,7 @@ export default function Auditoria() {
                           <div>
                             <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
                               <span>{log.user?.name || 'Usuario desconocido'}</span>
+                              <InactiveUserBadge user={log.user} />
                               {log.user?.id === 1 && (
                                 <span className="text-[9px] bg-amber-100 text-amber-800 font-extrabold px-1 rounded">
                                   Super
@@ -654,6 +656,7 @@ export default function Auditoria() {
                   <span className="text-slate-400 font-medium">Usuario:</span>
                   <span className="font-semibold text-slate-800">
                     {selectedLogDetail.user?.name} ({selectedLogDetail.user?.email})
+                    {' '}<InactiveUserBadge user={selectedLogDetail.user} />
                   </span>
                 </div>
                 <div className="flex justify-between">

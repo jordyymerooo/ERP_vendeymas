@@ -1,6 +1,7 @@
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import Pagination from '../components/Pagination';
+import InactiveUserBadge, { isUserInactive } from '../components/InactiveUserBadge';
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -329,7 +330,7 @@ export default function Clientes() {
                 <option value="">Todos los Asesores</option>
                 {advisorsList.map((adv) => (
                   <option key={adv.id} value={adv.id}>
-                    {adv.name}
+                    {adv.name}{isUserInactive(adv) ? ' · Inactivo' : ''}
                   </option>
                 ))}
               </select>
@@ -444,6 +445,7 @@ export default function Clientes() {
                         <span className="truncate max-w-[150px]">
                           {cliente.advisor ? cliente.advisor.name : 'Administración'}
                         </span>
+                        <InactiveUserBadge user={cliente.advisor} />
                       </span>
                     </td>
 
@@ -643,7 +645,7 @@ export default function Clientes() {
                     className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 focus:bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-400 transition cursor-pointer"
                   >
                     <option value="">-- Asignación por Defecto (Mi Usuario) --</option>
-                    {advisorsList.map((adv) => (
+                    {advisorsList.filter((adv) => !isUserInactive(adv)).map((adv) => (
                       <option key={adv.id} value={adv.id}>
                         {adv.name} ({adv.email})
                       </option>

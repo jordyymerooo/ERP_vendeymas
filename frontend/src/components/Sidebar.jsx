@@ -116,8 +116,8 @@ export default function Sidebar({ isOpen, onClose }) {
       });
     }
 
-    // 4. Tareas Administrativas (Super Admin y Administrador)
-    if (isSuperAdmin || isAdministrador) {
+    // 4. Tareas asignadas por Gerencia.
+    if (isSuperAdmin || isAdministrador || isAsesor) {
       items.push({
         name: isSuperAdmin ? 'Tareas del CEO' : 'Mis Tareas',
         path: '/tareas',

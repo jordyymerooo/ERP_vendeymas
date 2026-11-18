@@ -21,7 +21,7 @@ class AuditLogController extends Controller
             ], 403);
         }
 
-        $query = AuditLog::with(['user:id,name,email', 'user.roles:id,name'])->latest('id');
+        $query = AuditLog::with(['user:id,name,email,is_active,deleted_at', 'user.roles:id,name'])->latest('id');
 
         // Filtro por módulo si se proporciona
         if ($request->filled('module') && $request->input('module') !== 'TODOS') {

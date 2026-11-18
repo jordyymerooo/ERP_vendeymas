@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\RoleSecurityGuard;
+use App\Http\Middleware\EnsureActiveUser;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -41,7 +42,7 @@ Route::post('/forgot-password-request', [AuthController::class, 'requestPassword
 // ==========================================================
 // RUTAS PROTEGIDAS CON LARAVEL SANCTUM (auth:sanctum + throttle:api + RoleSecurityGuard)
 // ==========================================================
-Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->group(function () {
+Route::middleware(['auth:sanctum', EnsureActiveUser::class, 'throttle:api', RoleSecurityGuard::class])->group(function () {
     // Sesión y Usuario autenticado
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
@@ -101,8 +102,11 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
         Route::post('/users', [UserController::class, 'store']);
         Route::put('/users/{id}', [UserController::class, 'update']);
         Route::post('/users/{id}/reset-password', [UserController::class, 'resetUserPassword']);
+        Route::post('/users/{id}/reactivate', [UserController::class, 'reactivate']);
+        Route::post('/users/{id}/transfer-portfolio', [UserController::class, 'transferPortfolio']);
         Route::delete('/users/{id}', [UserController::class, 'destroy']);
         Route::post('/users/{id}/assign-projects', [UserController::class, 'assignProjects']);
+        Route::post('/admin-tasks', [AdminTaskController::class, 'store']);
 
         // Auditoría, Respaldo y Mantenimiento del Sistema
         Route::get('/audit-logs', [AuditLogController::class, 'index']);
@@ -146,9 +150,8 @@ Route::middleware(['auth:sanctum', 'throttle:api', RoleSecurityGuard::class])->g
     Route::put('/topography-jobs/{id}', [TopographyJobController::class, 'update']);
     Route::delete('/topography-jobs/{id}', [TopographyJobController::class, 'destroy']);
 
-    // Tareas del CEO para Administradores
+    // Tareas del CEO: cada Administrador o Asesor consulta y completa sus propias tareas.
     Route::get('/admin-tasks', [AdminTaskController::class, 'index']);
-    Route::post('/admin-tasks', [AdminTaskController::class, 'store']);
     Route::put('/admin-tasks/{id}', [AdminTaskController::class, 'update']);
     Route::delete('/admin-tasks/completed/clear', [AdminTaskController::class, 'clearCompleted']);
     Route::delete('/admin-tasks/{id}', [AdminTaskController::class, 'destroy']);

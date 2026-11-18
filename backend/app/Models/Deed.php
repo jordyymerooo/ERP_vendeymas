@@ -72,7 +72,7 @@ class Deed extends Model
      */
     public function assignedAdmin(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'assigned_admin_id');
+        return $this->belongsTo(User::class, 'assigned_admin_id')->withTrashed();
     }
 
     /**

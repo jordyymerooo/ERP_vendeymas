@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Helpers\RoleSecurity;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Models\Customer;
+use App\Models\Lead;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,7 +21,15 @@ class UserController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $request->validate(['status' => ['sometimes', Rule::in(['active', 'inactive', 'all'])]]);
         $query = $this->usersQuery()->addSelect('password_reset_requested', 'password_reset_requested_at');
+        $status = $request->input('status', 'active');
+        if ($status === 'inactive') {
+            $query->where(fn ($users) => $users->whereNotNull('deleted_at')->orWhere('is_active', false));
+        } elseif ($status === 'active') {
+            $query->whereNull('deleted_at')->where('is_active', true);
+        }
+        $statusUserIds = (clone $query)->reorder()->select('users.id');
         if ($request->filled('role') && $request->input('role') !== 'TODOS') {
             $query->whereHas('roles', fn ($role) => $role->where('name', $request->input('role')));
         }
@@ -32,6 +42,7 @@ class UserController extends Controller
         $counts = DB::table('model_has_roles')
             ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
             ->where('model_type', (new User)->getMorphClass())
+            ->whereIn('model_has_roles.model_id', $statusUserIds)
             ->groupBy('roles.name')
             ->selectRaw('roles.name, count(*) as count')->pluck('count', 'name');
 
@@ -46,7 +57,8 @@ class UserController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor->hasAnyRole(['Super Admin', 'Administrador']), 403);
-        $query = $this->usersQuery()->select('id', 'name', 'email');
+        $query = $this->usersQuery()->select('id', 'name', 'email', 'is_active', 'deleted_at')
+            ->whereNull('deleted_at')->where('is_active', true);
         if (!$actor->hasRole('Super Admin')) {
             $query->whereKey($actor->id);
         }
@@ -57,7 +69,7 @@ class UserController extends Controller
 
     private function usersQuery()
     {
-        return User::select('id', 'name', 'email', 'phone', 'created_at')
+        return User::withTrashed()->select('id', 'name', 'email', 'phone', 'created_at', 'is_active', 'deleted_at')
             ->with(['roles:id,name', 'assignedProjects:id,name,location'])->orderBy('id');
     }
 
@@ -131,7 +143,7 @@ class UserController extends Controller
      */
     public function show(string|int $id): JsonResponse
     {
-        $user = User::with(['roles', 'assignedProjects'])->findOrFail($id);
+        $user = User::withTrashed()->with(['roles', 'assignedProjects'])->findOrFail($id);
 
         return response()->json([
             'success' => true,
@@ -259,7 +271,7 @@ class UserController extends Controller
     }
 
     /**
-     * Elimina un usuario del sistema (impidiendo eliminar al Administrador Principal).
+     * Revoca el acceso conservando todos los vínculos y documentos históricos.
      */
     public function destroy(Request $request, string|int $id): JsonResponse
     {
@@ -267,33 +279,101 @@ class UserController extends Controller
             return $denied;
         }
 
-        $user = User::findOrFail($id);
+        return DB::transaction(function () use ($request, $id) {
+            $user = User::withTrashed()->lockForUpdate()->findOrFail($id);
 
-        // Regla de seguridad: Proteger al administrador principal
-        if ((int)$user->id === 1 || ($user->hasRole('Super Admin') && User::role('Super Admin')->count() <= 1)) {
+            if ((int) $user->id === 1 || $user->hasRole('Super Admin')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No es posible dar de baja una cuenta Super Admin / Gerencia.',
+                ], 422);
+            }
+
+            $user->tokens()->delete();
+            if (!$user->trashed() || $user->is_active) {
+                $user->forceFill([
+                    'is_active' => false,
+                    'password_reset_requested' => false,
+                    'password_reset_requested_at' => null,
+                ])->save();
+                if (!$user->trashed()) {
+                    $user->delete();
+                }
+
+                AuditLog::record(
+                    $request->user()->id,
+                    'Usuarios',
+                    "Dio de baja a {$user->name} ({$user->email}). Su historial operativo, recibos, clientes y prospectos se mantiene conservado.",
+                    $request->ip(),
+                    $request->userAgent()
+                );
+            }
+
             return response()->json([
-                'success' => false,
-                'message' => 'No es posible eliminar al Administrador Principal del sistema.',
-            ], 422);
+                'success' => true,
+                'message' => 'Usuario dado de baja. El acceso fue revocado y todo su historial se conserva intacto.',
+            ]);
+        });
+    }
+
+    public function reactivate(Request $request, string|int $id): JsonResponse
+    {
+        if ($denied = $this->ensureSuperAdmin($request)) {
+            return $denied;
         }
 
-        $deletedName = $user->name;
-        $deletedEmail = $user->email;
-        $user->delete();
+        return DB::transaction(function () use ($request, $id) {
+            $user = User::withTrashed()->lockForUpdate()->findOrFail($id);
+            if ($user->trashed() || !$user->is_active) {
+                $user->tokens()->delete();
+                if ($user->trashed()) {
+                    $user->restore();
+                }
+                $user->is_active = true;
+                $user->save();
+                AuditLog::record($request->user()->id, 'Usuarios',
+                    "Reactivó a {$user->name} ({$user->email}), conservando su historial operativo.",
+                    $request->ip(), $request->userAgent());
+            }
 
-        // Auditoría
-        AuditLog::record(
-            $request->user()?->id ?? 1,
-            'Usuarios',
-            "Eliminó usuario del sistema: {$deletedName} ({$deletedEmail})",
-            $request->ip(),
-            $request->userAgent()
-        );
+            return response()->json([
+                'success' => true,
+                'message' => 'Usuario reactivado. Puede iniciar sesión nuevamente.',
+                'data' => $user->load(['roles', 'assignedProjects']),
+            ]);
+        });
+    }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Usuario eliminado con éxito del sistema.',
-        ]);
+    public function transferPortfolio(Request $request, string|int $id): JsonResponse
+    {
+        if ($denied = $this->ensureSuperAdmin($request)) {
+            return $denied;
+        }
+        $validated = $request->validate(['target_user_id' => 'required|integer']);
+        abort_if((int) $id === (int) $validated['target_user_id'], 422, 'Seleccione otro asesor activo.');
+
+        return DB::transaction(function () use ($request, $id, $validated) {
+            $users = User::withTrashed()->whereIn('id', [$id, $validated['target_user_id']])
+                ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            $source = $users->get($id);
+            $target = $users->get($validated['target_user_id']);
+            abort_unless($source, 404, 'Usuario de origen no encontrado.');
+            abort_unless($source->trashed() || !$source->is_active, 422, 'La cartera de origen debe pertenecer a un usuario dado de baja.');
+            abort_unless($target && !$target->trashed() && $target->is_active && $target->hasRole('Asesor Comercial'),
+                422, 'El destinatario debe ser un Asesor Comercial activo.');
+
+            $customers = Customer::where('assigned_user_id', $source->id)->update(['assigned_user_id' => $target->id]);
+            $leads = Lead::where('user_id', $source->id)->whereNotIn('stage', ['Cierre Ganado', 'Descartado'])
+                ->update(['user_id' => $target->id]);
+            $target->assignedProjects()->syncWithoutDetaching($source->assignedProjects()->pluck('projects.id')->all());
+
+            AuditLog::record($request->user()->id, 'Usuarios',
+                "Transfirió la cartera de {$source->name} (ID {$source->id}) a {$target->name} (ID {$target->id}): {$customers} clientes y {$leads} prospectos activos. Los emisores de recibos y la auditoría histórica se conservan.",
+                $request->ip(), $request->userAgent());
+
+            return response()->json(['success' => true, 'message' => 'Cartera transferida sin modificar recibos ni auditoría histórica.',
+                'customers_transferred' => $customers, 'leads_transferred' => $leads]);
+        });
     }
 
     /**

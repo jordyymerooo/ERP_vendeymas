@@ -1,6 +1,7 @@
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import Pagination from '../components/Pagination';
+import InactiveUserBadge, { isUserInactive } from '../components/InactiveUserBadge';
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -132,6 +133,7 @@ export default function Marketing() {
 
   const filteredAdvisorsList = React.useMemo(() => {
     return (advisorsList || []).filter((adv) => {
+      if (isUserInactive(adv)) return false;
       const role = (adv.role || '').toLowerCase();
       const name = (adv.name || '').toLowerCase();
       if (role.includes('admin') || role.includes('topóg') || role.includes('topog')) return false;
@@ -529,7 +531,7 @@ export default function Marketing() {
                 <option value="">Todos los Asesores ({filteredAdvisorsSummary.length})</option>
                 {filteredAdvisorsSummary.map((adv) => (
                   <option key={adv.id} value={adv.id}>
-                    {adv.name} ({adv.active_count} activos, {adv.won_count} ganados)
+                    {adv.name}{isUserInactive(adv) ? ' · Inactivo' : ''} ({adv.active_count} activos, {adv.won_count} ganados)
                   </option>
                 ))}
               </select>
@@ -559,6 +561,7 @@ export default function Marketing() {
                           {adv.name.charAt(0)}
                         </div>
                         <span className="text-xs font-bold text-white truncate">{adv.name}</span>
+                        <InactiveUserBadge user={adv} />
                       </div>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-medium">
                         {adv.role}
@@ -826,6 +829,7 @@ export default function Marketing() {
                                   <span className="font-semibold text-slate-700 truncate">
                                     Asesor: {lead.advisor?.name || 'General'}
                                   </span>
+                                  <InactiveUserBadge user={lead.advisor} />
                                 </div>
                               </div>
 
@@ -1002,6 +1006,7 @@ export default function Marketing() {
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-medium text-[11px]">
                           <UserCheck className="w-3 h-3 text-indigo-600" />
                           {lead.advisor?.name || 'General'}
+                          <InactiveUserBadge user={lead.advisor} />
                         </span>
                       </td>
                       <td className="py-3 px-4">

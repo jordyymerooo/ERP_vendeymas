@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\AppNotification;
 use App\Models\AdminTask;
 use App\Services\DelinquentLots;
-use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -19,24 +18,11 @@ class NotificationController extends Controller
      */
     public function summary(Request $request): JsonResponse
     {
-        $user = $request->user() ?: auth()->user();
-
-        // Detección de Rol Activo y Simulado
-        $simulatedRole = $request->header('X-Simulate-Role')
-            ?: $request->header('X-Simulated-Role')
-            ?: $request->query('role')
-            ?: $request->query('simulate_role');
-
-        $effectiveRole = $simulatedRole ?: ($user?->roles?->first()?->name ?? 'Super Admin');
-        if ($effectiveRole === 'CEO / Gerente') {
-            $effectiveRole = 'Super Admin';
-        }
-
-        // Detección de Administrador específico unificada
-        $effectiveAdminId = AdminTaskController::resolveEffectiveAdminId($request);
+        $effectiveRole = AdminTaskController::resolveTaskRole($request);
+        $effectiveUserId = AdminTaskController::resolveEffectiveAssigneeId($request);
 
         // 1. Filtrar notificaciones según rol y usuario
-        $notifQuery = $this->buildScopedNotificationQuery($effectiveRole, $effectiveAdminId);
+        $notifQuery = $this->buildScopedNotificationQuery($effectiveRole, $effectiveUserId);
 
         $unreadCount = (clone $notifQuery)->where('is_read', false)->count();
 
@@ -59,8 +45,8 @@ class NotificationController extends Controller
 
         // 2. Conteo de Tareas Pendientes por Realizar
         $pendingTasksCount = 0;
-        if ($effectiveRole === 'Administrador') {
-            $pendingTasksCount = AdminTask::where('assigned_to', $effectiveAdminId)
+        if (in_array($effectiveRole, ['Administrador', 'Asesor Comercial'], true)) {
+            $pendingTasksCount = AdminTask::where('assigned_to', $effectiveUserId)
                 ->whereIn('status', ['Pendiente', 'En Curso'])
                 ->count();
         } elseif ($effectiveRole === 'Super Admin') {
@@ -84,9 +70,11 @@ class NotificationController extends Controller
     /**
      * Marca una notificación individual como leída.
      */
-    public function markAsRead(int|string $id): JsonResponse
+    public function markAsRead(Request $request, int|string $id): JsonResponse
     {
-        $notification = AppNotification::findOrFail($id);
+        $role = AdminTaskController::resolveTaskRole($request);
+        $userId = AdminTaskController::resolveEffectiveAssigneeId($request);
+        $notification = $this->buildScopedNotificationQuery($role, $userId)->findOrFail($id);
         $notification->update(['is_read' => true]);
 
         return response()->json([
@@ -101,20 +89,9 @@ class NotificationController extends Controller
      */
     public function markAllAsRead(Request $request): JsonResponse
     {
-        $user = $request->user() ?: auth()->user();
-
-        $simulatedRole = $request->header('X-Simulate-Role')
-            ?: $request->header('X-Simulated-Role')
-            ?: $request->query('role')
-            ?: $request->query('simulate_role');
-
-        $effectiveRole = $simulatedRole ?: ($user?->roles?->first()?->name ?? 'Super Admin');
-        if ($effectiveRole === 'CEO / Gerente') {
-            $effectiveRole = 'Super Admin';
-        }
-
-        $effectiveAdminId = AdminTaskController::resolveEffectiveAdminId($request);
-        $query = $this->buildScopedNotificationQuery($effectiveRole, $effectiveAdminId);
+        $effectiveRole = AdminTaskController::resolveTaskRole($request);
+        $effectiveUserId = AdminTaskController::resolveEffectiveAssigneeId($request);
+        $query = $this->buildScopedNotificationQuery($effectiveRole, $effectiveUserId);
         $updated = (clone $query)->where('is_read', false)->update(['is_read' => true]);
 
         return response()->json([
@@ -127,28 +104,19 @@ class NotificationController extends Controller
     /**
      * Construye la consulta filtrada según el rol y usuario.
      */
-    protected function buildScopedNotificationQuery(string $role, int $adminId)
+    protected function buildScopedNotificationQuery(string $role, int $userId)
     {
-        if ($role === 'Super Admin') {
-            return AppNotification::where(function ($q) {
-                $q->where('target_role', 'Super Admin')
-                  ->orWhereNull('target_role');
-            });
-        }
-
-        if ($role === 'Administrador') {
-            return AppNotification::where(function ($q) use ($adminId) {
-                $q->where(function ($sq) use ($adminId) {
-                    $sq->where('target_role', 'Administrador')
-                       ->where(function ($ssq) use ($adminId) {
-                           $ssq->where('target_user_id', $adminId)
-                               ->orWhereNull('target_user_id');
-                       });
-                })->orWhere('target_user_id', $adminId);
-            });
-        }
-
-        return AppNotification::where('target_role', $role);
+        return AppNotification::where(function ($query) use ($role, $userId) {
+            $query->where('target_user_id', $userId)
+                ->orWhere(function ($broadcast) use ($role) {
+                    $broadcast->whereNull('target_user_id')->where(function ($targetRole) use ($role) {
+                        $targetRole->where('target_role', $role);
+                        if ($role === 'Super Admin') {
+                            $targetRole->orWhereNull('target_role');
+                        }
+                    });
+                });
+        });
     }
 
     /**
