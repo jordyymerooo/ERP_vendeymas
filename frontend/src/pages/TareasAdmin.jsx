@@ -1,8 +1,11 @@
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
+import { getAuthenticatedRole } from '../utils/roleRoutes';
+import { isUserInactive } from '../components/InactiveUserBadge';
 import {
   CheckSquare,
   Plus,
@@ -45,6 +48,17 @@ const PRIORITIES = [
 ];
 
 const ITEMS_PER_PAGE = 10;
+
+const getAssignee = (task) => task.assignee ||
+  (typeof task.assigned_to === 'object' ? task.assigned_to : null) || task.assignedTo;
+
+const getAssigneeRole = (user) => user?.roles?.find((role) =>
+  ['Administrador', 'Asesor Comercial'].includes(role.name)
+)?.name || user?.role || 'Responsable';
+
+const isAssignableUser = (user) => !isUserInactive(user) &&
+  !user.roles?.some((role) => role.name === 'Super Admin') &&
+  user.roles?.some((role) => ['Administrador', 'Asesor Comercial'].includes(role.name));
 
 // Formateador de fecha y hora exacta de envío o finalización (ej: martes, 27 oct 2026 a las 15:40)
 export const formatSentDateTime = (dateStr) => {
@@ -90,37 +104,17 @@ export default function TareasAdmin({ openNewModal = false }) {
   // Paginación para pestaña Completadas
   const [completedPage, setCompletedPage] = useState(1);
 
-  // Perfil activo
-  const [userRole, setUserRole] = useState(() => localStorage.getItem('user_role') || 'Super Admin');
+  const { user: currentUser } = useAuth();
+  const userRole = getAuthenticatedRole(currentUser);
   const isSuperAdmin = userRole === 'Super Admin' || userRole === 'CEO / Gerente';
-
-  // Usuario autenticado actual
-  const currentUser = useMemo(() => {
-    try {
-      const str = localStorage.getItem('user');
-      return str ? JSON.parse(str) : null;
-    } catch (e) {
-      return null;
-    }
-  }, [userRole]);
-
-  useEffect(() => {
-    const handleAuthChange = () => {
-      setUserRole(localStorage.getItem('user_role') || 'Super Admin');
-      fetchTasks();
-    };
-    window.addEventListener('storage', handleAuthChange);
-    window.addEventListener('auth-change', handleAuthChange);
-    return () => {
-      window.removeEventListener('storage', handleAuthChange);
-      window.removeEventListener('auth-change', handleAuthChange);
-    };
-  }, []);
+  const canDeleteTasks = isSuperAdmin || userRole === 'Administrador';
+  const listRequest = useRef(0);
 
   // Filtros
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [adminFilter, setAdminFilter] = useState('all');
+  const [roleFilter, setRoleFilter] = useState('all');
   const [projectFilter, setProjectFilter] = useState('all');
 
   // Catálogos
@@ -162,14 +156,15 @@ export default function TareasAdmin({ openNewModal = false }) {
   // Detección y soporte de la ruta directa /tareas/asignarnuevatarea
   useEffect(() => {
     const isDirectModalRoute = openNewModal || location.pathname.includes('/asignarnuevatarea');
-    if (isDirectModalRoute) {
+    if (isSuperAdmin && isDirectModalRoute) {
       setCreateModalOpen(true);
     } else if (createModalOpen && !location.pathname.includes('/asignarnuevatarea')) {
       setCreateModalOpen(false);
     }
-  }, [location.pathname, openNewModal]);
+  }, [location.pathname, openNewModal, isSuperAdmin]);
 
   const handleOpenCreateModal = () => {
+    if (!isSuperAdmin) return;
     if (location.pathname !== '/tareas/asignarnuevatarea') {
       navigate('/tareas/asignarnuevatarea');
     }
@@ -184,32 +179,35 @@ export default function TareasAdmin({ openNewModal = false }) {
   };
 
   const fetchTasks = async () => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
       const params = {};
-      if (adminFilter !== 'all') params.assigned_to = adminFilter;
+      if (isSuperAdmin && adminFilter !== 'all') params.assigned_to = adminFilter;
       if (projectFilter !== 'all') params.project_id = projectFilter;
-      if (userRole) params.role = userRole;
+      if (isSuperAdmin && roleFilter !== 'all') params.role = roleFilter;
+      if (priorityFilter !== 'all') params.priority = priorityFilter;
 
       const res = await axios.get('/api/admin-tasks', { params });
+      if (requestId !== listRequest.current) return;
       setTasks(res.data?.data || []);
     } catch (err) {
+      if (requestId !== listRequest.current) return;
+      setTasks([]);
       console.error('Error al cargar tareas:', err);
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
   };
 
   const fetchCatalogs = async () => {
     try {
       const [usersRes, projRes] = await Promise.all([
-        axios.get('/api/users/options'),
+        isSuperAdmin ? axios.get('/api/users/options') : Promise.resolve({ data: { data: [] } }),
         axios.get('/api/projects'),
       ]);
       const allUsers = usersRes.data?.data || [];
-      const admins = allUsers.filter(
-        (u) => u.roles?.some((r) => r.name === 'Administrador' || r.name === 'Super Admin')
-      );
+      const admins = allUsers.filter(isAssignableUser);
       setAdminsList(admins);
       setProjectsList(Array.isArray(projRes.data) ? projRes.data : (projRes.data?.data || []));
 
@@ -230,11 +228,12 @@ export default function TareasAdmin({ openNewModal = false }) {
 
   useEffect(() => {
     fetchCatalogs();
-  }, []);
+  }, [isSuperAdmin, currentUser?.id]);
 
   useEffect(() => {
     fetchTasks();
-  }, [adminFilter, projectFilter]);
+    return () => { listRequest.current++; };
+  }, [adminFilter, projectFilter, roleFilter, priorityFilter, userRole, currentUser?.id]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -243,8 +242,9 @@ export default function TareasAdmin({ openNewModal = false }) {
 
   // Crear tarea (CEO)
   const [handleCreateTask, handleCreateTaskPending] = useSingleSubmit(async (e) => {
+    if (!isSuperAdmin) return;
     if (!newTask.title.trim() || !newTask.assigned_to) {
-      alert('Por favor ingresa un título y asigna la tarea a un administrador.');
+      alert('Por favor ingresa un título y selecciona un Administrador o Asesor Comercial activo.');
       return;
     }
 
@@ -273,11 +273,11 @@ export default function TareasAdmin({ openNewModal = false }) {
     }
   }, { form: true });
 
-  // Actualizar estado de tarea (Solo permitido para el Administrador Asignado)
+  // Actualizar el estado de una tarea propia.
   const [handleStatusChange, handleStatusChangePending] = useSingleSubmit(async (taskId, newStatus) => {
     // Si es CEO, bloquear intento de completar
     if (isSuperAdmin && newStatus === 'Completada') {
-      alert('Restricción: Solo el Administrador asignado a esta tarea puede certificar y marcar su estado como Completada.');
+      alert('Solo el responsable asignado puede certificar y marcar esta tarea como Completada.');
       return;
     }
 
@@ -334,7 +334,12 @@ export default function TareasAdmin({ openNewModal = false }) {
     }
 
     try {
-      const res = await axios.delete('/api/admin-tasks/completed/clear');
+      const params = {};
+      if (isSuperAdmin && adminFilter !== 'all') params.assigned_to = adminFilter;
+      if (isSuperAdmin && roleFilter !== 'all') params.role = roleFilter;
+      if (projectFilter !== 'all') params.project_id = projectFilter;
+      if (priorityFilter !== 'all') params.priority = priorityFilter;
+      const res = await axios.delete('/api/admin-tasks/completed/clear', { params });
       showToast(res.data?.message || 'Tareas completadas eliminadas del archivo.');
       window.dispatchEvent(new Event('notifications-updated'));
       setTasks((prev) => prev.filter((t) => t.status !== 'Completada'));
@@ -431,34 +436,14 @@ export default function TareasAdmin({ openNewModal = false }) {
     return filteredCompletedTasks.slice(start, start + ITEMS_PER_PAGE);
   }, [filteredCompletedTasks, completedPage]);
 
-  // Sincronización instantánea del total de tareas activas con Sidebar y Header
-  useEffect(() => {
-    const activeCount = rawActiveTasks.length;
-    try {
-      localStorage.setItem('active_tasks_count', String(activeCount));
-    } catch (e) {}
-    window.dispatchEvent(new CustomEvent('tasks-count-updated', { detail: activeCount }));
-  }, [rawActiveTasks.length]);
+  // El resumen de notificaciones mantiene el contador global, sin los filtros de esta vista.
+  const getAdminName = (task) => getAssignee(task)?.name || 'Responsable no registrado';
+  const getTaskRole = (task) => task.assignee_role || getAssigneeRole(getAssignee(task));
 
-  // Helper para nombre de Administrador responsable
-  const getAdminName = (task) => {
-    if (task.assigned_to && typeof task.assigned_to === 'object') {
-      return task.assigned_to.name;
-    }
-    if (task.assignedTo && typeof task.assignedTo === 'object') {
-      return task.assignedTo.name;
-    }
-    return 'Área Administrativa';
-  };
-
-  // Helper para saber si una tarea le pertenece al Administrador con sesión activa
+  // Cada empleado gestiona exclusivamente sus propias tareas.
   const isAssignedToCurrentAdmin = (task) => {
-    // Cuando el PERFIL DE ACCESO activo sea Administrador, siempre habilitar gestión y botón Completada
-    if (userRole === 'Administrador') {
-      return true;
-    }
     if (isSuperAdmin) return false;
-    const taskAdminId = typeof task.assigned_to === 'object' ? task.assigned_to?.id : task.assigned_to;
+    const taskAdminId = getAssignee(task)?.id || task.assigned_to;
     if (currentUser?.id && taskAdminId) {
       return String(currentUser.id) === String(taskAdminId);
     }
@@ -485,14 +470,14 @@ export default function TareasAdmin({ openNewModal = false }) {
         <div>
           <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
             <CheckSquare className="w-4 h-4 text-slate-700" />
-            <span>{isSuperAdmin ? 'Panel de Delegación del CEO' : 'Operaciones Administrativas'}</span>
+            <span>{isSuperAdmin ? 'Panel de Delegación del CEO' : 'Tareas de Gerencia'}</span>
           </div>
           <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <span>{isSuperAdmin ? 'Tareas del CEO para Administradores' : 'Mis Tareas Administrativas'}</span>
+            <span>{isSuperAdmin ? 'Tareas del CEO para Administradores y Asesores' : 'Mis Tareas Asignadas por Gerencia'}</span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {isSuperAdmin
-              ? 'Delegación directa de responsabilidades notariales, municipales y de campo con monitoreo de estado en tiempo real.'
+              ? 'Asigna responsabilidades a Administradores y Asesores Comerciales y consulta su avance.'
               : 'Gestión de diligencias asignadas por Gerencia con control de avance, fechas límite y archivo histórico.'}
           </p>
         </div>
@@ -560,7 +545,7 @@ export default function TareasAdmin({ openNewModal = false }) {
         </div>
 
         {/* Botón Vaciar Completadas en la esquina de la pestaña de completadas */}
-        {activeTab === 'completadas' && rawCompletedTasks.length > 0 && (
+        {canDeleteTasks && activeTab === 'completadas' && rawCompletedTasks.length > 0 && (
           <div className="pb-2 sm:pb-0">
             <ActionButton loading={handleClearCompletedPending}
               type="button"
@@ -576,7 +561,7 @@ export default function TareasAdmin({ openNewModal = false }) {
       </div>
 
       {/* Filtros Generales */}
-      <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+      <div className={`bg-white p-3.5 rounded-lg border border-slate-200 shadow-xs grid grid-cols-1 sm:grid-cols-2 ${isSuperAdmin ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-3 text-xs`}>
         {/* Buscador */}
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -628,7 +613,26 @@ export default function TareasAdmin({ openNewModal = false }) {
           </select>
         </div>
 
-        {/* Administrador (Solo CEO) */}
+        {isSuperAdmin && (
+          <div>
+            <select id="tareas-filter-role" name="tareas_filter_role"
+              aria-label="Filtrar por cargo del responsable"
+              value={roleFilter}
+              onChange={(e) => {
+                setRoleFilter(e.target.value);
+                setAdminFilter('all');
+                setCompletedPage(1);
+              }}
+              className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium focus:ring-1 focus:ring-slate-900"
+            >
+              <option value="all">Todos los Roles</option>
+              <option value="Administrador">Administradores</option>
+              <option value="Asesor Comercial">Asesores Comerciales</option>
+            </select>
+          </div>
+        )}
+
+        {/* Responsable (Solo CEO) */}
         {isSuperAdmin ? (
           <div>
             <select id="tareas-filter-admin" name="tareas_filter_admin"
@@ -639,10 +643,10 @@ export default function TareasAdmin({ openNewModal = false }) {
               }}
               className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium focus:ring-1 focus:ring-slate-900"
             >
-              <option value="all">Todos los Administradores</option>
-              {adminsList.map((adm) => (
+              <option value="all">Todos los Responsables</option>
+              {adminsList.filter((assignee) => roleFilter === 'all' || getAssigneeRole(assignee) === roleFilter).map((adm) => (
                 <option key={adm.id} value={adm.id}>
-                  {adm.name}
+                  {adm.name} ({getAssigneeRole(adm)})
                 </option>
               ))}
             </select>
@@ -659,7 +663,7 @@ export default function TareasAdmin({ openNewModal = false }) {
       {loading ? (
         <div className="py-20 flex flex-col items-center justify-center text-slate-400">
           <Loader2 className="w-8 h-8 animate-spin text-slate-600 mb-2" />
-          <p className="text-xs font-semibold">Cargando tareas administrativas...</p>
+          <p className="text-xs font-semibold">Cargando tareas asignadas...</p>
         </div>
       ) : activeTab === 'activas' ? (
         /* ================= VISTA BANDEJA ACTIVA (ALTA -> MEDIA -> BAJA) ================= */
@@ -701,6 +705,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
                         adminName={getAdminName(task)}
+                        assigneeRole={getTaskRole(task)}
                       />
                     ))}
                   </div>
@@ -734,6 +739,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
                         adminName={getAdminName(task)}
+                        assigneeRole={getTaskRole(task)}
                       />
                     ))}
                   </div>
@@ -767,6 +773,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         isSuperAdmin={isSuperAdmin}
                         canManage={isAssignedToCurrentAdmin(task)}
                         adminName={getAdminName(task)}
+                        assigneeRole={getTaskRole(task)}
                       />
                     ))}
                   </div>
@@ -873,7 +880,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                         </div>
 
                         {/* Botón Eliminar Registro */}
-                        <ActionButton loading={handleDeleteTaskPending}
+                        {canDeleteTasks && <ActionButton loading={handleDeleteTaskPending}
                           type="button"
                           onClick={() => handleDeleteTask(task.id)}
                           className="px-2 py-0.5 rounded text-rose-600 hover:text-rose-800 hover:bg-rose-50 text-[10px] font-bold border border-rose-200 transition flex items-center gap-1 cursor-pointer shrink-0"
@@ -881,8 +888,11 @@ export default function TareasAdmin({ openNewModal = false }) {
                         >
                           <Trash2 className="w-3 h-3" />
                           <span>Eliminar</span>
-                        </ActionButton>
+                        </ActionButton>}
                       </div>
+                      <span className="inline-flex rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                        {getTaskRole(task)}
+                      </span>
 
                       {/* Botón Compacto WhatsApp Reporte al CEO y Correo */}
                       <div className="pt-2 border-t border-slate-100 flex flex-col gap-1.5">
@@ -972,15 +982,15 @@ export default function TareasAdmin({ openNewModal = false }) {
       )}
 
       {/* ================= MODAL: ASIGNAR NUEVA TAREA (CEO / RUTA DIRECTA) ================= */}
-      {createModalOpen && (
+      {isSuperAdmin && createModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
           <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-full max-w-md overflow-hidden">
             <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-slate-900" />
                 <div>
-                  <h3 className="font-bold text-sm text-slate-900">Asignar Tarea a Administrador</h3>
-                  <span className="text-[10px] text-slate-500 font-mono">Ruta: /tareas/asignarnuevatarea</span>
+                  <h3 className="font-bold text-sm text-slate-900">Asignar Nueva Tarea</h3>
+                  <span className="text-[10px] text-slate-500">Para Administradores y Asesores Comerciales</span>
                 </div>
               </div>
               <button
@@ -1016,10 +1026,10 @@ export default function TareasAdmin({ openNewModal = false }) {
                 />
               </div>
 
-              {/* Selección de Administrador y Filtro Automático de Proyectos */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Selección del responsable y proyecto opcional. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="tareas-assigned-admin" className="block font-bold text-slate-700 mb-1">Administrador Asignado *</label>
+                  <label htmlFor="tareas-assigned-admin" className="block font-bold text-slate-700 mb-1">Responsable Asignado *</label>
                   <select id="tareas-assigned-admin" name="tareas_assigned_admin"
                     required
                     value={newTask.assigned_to}
@@ -1029,7 +1039,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                     <option value="">-- Seleccionar --</option>
                     {adminsList.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {a.name} ({getAssigneeRole(a)})
                       </option>
                     ))}
                   </select>
@@ -1037,7 +1047,7 @@ export default function TareasAdmin({ openNewModal = false }) {
 
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block font-bold text-slate-700">Proyecto (Opcional)</label>
+                    <label htmlFor="tareas-project" className="block font-bold text-slate-700">Proyecto (Opcional)</label>
                   </div>
                   <select id="tareas-project" name="tareas_project"
                     value={newTask.project_id}
@@ -1046,7 +1056,7 @@ export default function TareasAdmin({ openNewModal = false }) {
                     className="w-full px-3 py-2 rounded-md border border-slate-200 bg-slate-50 text-slate-800 font-medium disabled:opacity-50"
                   >
                     {!newTask.assigned_to ? (
-                      <option value="">-- Selecciona Administrador --</option>
+                      <option value="">-- Selecciona Responsable --</option>
                     ) : modalAdminProjects.length > 0 ? (
                       <>
                         <option value="">-- Sin Proyecto Específico --</option>
@@ -1245,6 +1255,7 @@ function TaskCardActive({
   isSuperAdmin,
   canManage,
   adminName,
+  assigneeRole,
 }) {
   return (
     <div
@@ -1265,7 +1276,7 @@ function TaskCardActive({
                   ? 'bg-amber-50 text-amber-800 border-amber-300'
                   : 'bg-blue-50 text-blue-800 border-blue-300'
               }`}
-              title="Estado actual gestionado por el Administrador"
+              title="Estado actual gestionado por el responsable asignado"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-current" />
               <span>{task.status}</span>
@@ -1291,6 +1302,9 @@ function TaskCardActive({
             </span>
           )}
         </div>
+        <span className="inline-flex rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+          {assigneeRole}
+        </span>
 
         <h3 className="font-black text-sm text-slate-900 leading-snug">{task.title}</h3>
 
@@ -1368,7 +1382,7 @@ function TaskCardActive({
               <span>Marcar como Completada</span>
             </ActionButton>
           ) : (
-            <span className="text-[10px] text-slate-400 italic">Asignada a otro Administrador</span>
+            <span className="text-[10px] text-slate-400 italic">Asignada a otro responsable</span>
           )}
         </div>
       </div>

@@ -29,7 +29,7 @@ class LeadController extends Controller
         $user = $request->user();
         $isSuperAdmin = $this->checkIsSuperAdmin($user, $request);
 
-        $query = Lead::with(['project', 'customer', 'advisor:id,name'])
+        $query = Lead::with(['project', 'customer', 'advisor:id,name,is_active,deleted_at'])
             ->latest('created_at')->latest('id');
 
         // ==========================================================
@@ -107,7 +107,7 @@ class LeadController extends Controller
             ")->groupBy('user_id')->get()->keyBy('user_id');
 
             // Filtrado estricto en BD: excluir por completo Administradores y Topógrafos
-            $allUsers = User::select('id', 'name', 'email')->with('roles:id,name')
+            $allUsers = User::withTrashed()->select('id', 'name', 'email', 'is_active', 'deleted_at')->with('roles:id,name')
                 ->whereDoesntHave('roles', function ($q) {
                     $q->whereIn('name', ['Administrador', 'Topógrafo']);
                 })
@@ -143,6 +143,8 @@ class LeadController extends Controller
                     'id' => $adv->id,
                     'name' => $adv->name,
                     'email' => $adv->email,
+                    'is_active' => $adv->is_active,
+                    'deleted_at' => $adv->deleted_at,
                     'role' => $adv->roles->first()?->name ?? 'Asesor Comercial',
                     'total_assigned' => $advStats ? (int) $advStats->total_assigned : 0,
                     'in_negotiation_or_visit' => $advStats ? (int) $advStats->in_negotiation_or_visit : 0,
@@ -155,6 +157,8 @@ class LeadController extends Controller
             $advisorsList = $allUsers->map(fn($u) => [
                 'id' => $u->id,
                 'name' => $u->name,
+                'is_active' => $u->is_active,
+                'deleted_at' => $u->deleted_at,
                 'role' => $u->roles->first()?->name ?? 'Asesor Comercial',
             ]);
         }

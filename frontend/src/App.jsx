@@ -111,13 +111,13 @@ export default function App() {
               <Route element={<RoleRoute allowedRoles={['Super Admin', 'Administrador']} />}>
                 <Route path="/escrituras" element={<Escrituras />} />
                 <Route path="/escrituras/iniciartramite" element={<Escrituras openNewModal={true} />} />
-                <Route path="/tareas" element={<TareasAdmin />} />
-                <Route path="/tareas/asignarnuevatarea" element={<TareasAdmin openNewModal={true} />} />
               </Route>
               <Route element={<RoleRoute allowedRoles={['Super Admin', 'Administrador', 'Asesor Comercial']} />}>
+                <Route path="/tareas" element={<TareasAdmin />} />
                 <Route path="/alertas-mora" element={<AlertasMora />} />
               </Route>
               <Route element={<RoleRoute allowedRoles={['Super Admin']} />}>
+                <Route path="/tareas/asignarnuevatarea" element={<TareasAdmin openNewModal={true} />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/cheques" element={<Cheques />} />
                 <Route path="/usuarios" element={<Usuarios />} />

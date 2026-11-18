@@ -9,18 +9,24 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
     public function requestPasswordReset(Request $request): JsonResponse
     {
         $validated = $request->validate(['email' => 'required|email']);
-        $user = User::where('email', $validated['email'])->first();
+        $user = User::withTrashed()->where('email', $validated['email'])->first();
 
         if (!$user) {
             return response()->json([
                 'message' => 'No encontramos una cuenta asociada a ese correo electrónico.',
             ], 404);
+        }
+
+        if ($user->trashed() || !$user->is_active) {
+            return response()->json(['message' => 'Esta cuenta ha sido desactivada por Gerencia.'], 403);
         }
 
         if (RoleSecurity::isRealSuperAdmin($user)) {
@@ -57,35 +63,34 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        if (!Auth::attempt($credentials)) {
+        return DB::transaction(function () use ($credentials, $request) {
+            // Serialize token issuance with account deactivation on the same user row.
+            $user = User::withTrashed()->where('email', $credentials['email'])->lockForUpdate()->first();
+
+            if (!$user || !Hash::check($credentials['password'], $user->password)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Credenciales incorrectas. Verifique su correo y contraseña.',
+                ], 401);
+            }
+
+            if ($user->trashed() || !$user->is_active) {
+                return response()->json(['message' => 'Esta cuenta ha sido desactivada por Gerencia.'], 403);
+            }
+
+            Auth::setUser($user);
+            $token = $user->createToken('auth_token')->plainTextToken;
+
+            AuditLog::record($user->id, 'Autenticación', 'Inicio de sesión exitoso', $request->ip(), $request->userAgent());
+
             return response()->json([
-                'success' => false,
-                'message' => 'Credenciales incorrectas. Verifique su correo y contraseña.',
-            ], 401);
-        }
-
-        /** @var User $user */
-        $user = Auth::user();
-
-        // Generar token mediante Laravel Sanctum
-        $token = $user->createToken('auth_token')->plainTextToken;
-
-        // Registrar en Auditoría del Sistema
-        AuditLog::record(
-            $user->id,
-            'Autenticación',
-            'Inicio de sesión exitoso',
-            $request->ip(),
-            $request->userAgent()
-        );
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Inicio de sesión exitoso.',
-            'token' => $token,
-            'user' => $user->load('roles'),
-            'roles' => $user->getRoleNames(),
-        ]);
+                'success' => true,
+                'message' => 'Inicio de sesión exitoso.',
+                'token' => $token,
+                'user' => $user->load('roles'),
+                'roles' => $user->getRoleNames(),
+            ]);
+        });
     }
 
     /**

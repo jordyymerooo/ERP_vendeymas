@@ -71,6 +71,7 @@ export default function Header({ onToggleSidebar }) {
   const [currentRole, setCurrentRole] = useState(() => {
     return localStorage.getItem('user_role') || 'Super Admin';
   });
+  const hasAssignedTasks = ['Administrador', 'Admin', 'Asesor Comercial'].includes(currentRole);
 
   const [moraCount, setMoraCount] = useState(0);
   const [pendingTasksCount, setPendingTasksCount] = useState(() => {
@@ -537,8 +538,7 @@ export default function Header({ onToggleSidebar }) {
           {/* Centro de Notificaciones en Tiempo Real (Campanita Dropdown) */}
           <div className="relative" ref={notificationsRef}>
             {(() => {
-              const isAdministradorRole = currentRole === 'Administrador' || currentRole === 'Admin';
-              const totalBellAlerts = isAdministradorRole
+              const totalBellAlerts = hasAssignedTasks
                 ? (notificationsData.unread_count + pendingTasksCount)
                 : notificationsData.unread_count;
 
@@ -615,8 +615,8 @@ export default function Header({ onToggleSidebar }) {
                   </span>
                 </div>
 
-                {/* Si el rol activo es Administrador: Fila compacta rápida Mis Tareas por Realizar */}
-                {(currentRole === 'Administrador' || currentRole === 'Admin') && (
+                {/* Acceso rápido a las tareas propias de administradores y asesores. */}
+                {hasAssignedTasks && (
                   <div
                     onClick={() => {
                       setIsNotificationsOpen(false);

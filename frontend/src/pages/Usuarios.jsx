@@ -1,6 +1,7 @@
 import useSingleSubmit from '../hooks/useSingleSubmit';
 import ActionButton from '../components/ActionButton';
 import ResetUserPasswordDialog from '../components/ResetUserPasswordDialog';
+import InactiveUserBadge, { isUserInactive } from '../components/InactiveUserBadge';
 import Pagination from '../components/Pagination';
 import React, { useRef, useState, useEffect } from 'react';
 import axios from 'axios';
@@ -16,6 +17,7 @@ import {
   Mail,
   Lock,
   UserCheck,
+  RotateCcw,
   Building2,
   Mountain,
   Loader2,
@@ -46,6 +48,7 @@ export default function Usuarios() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState('TODOS');
+  const [statusFilter, setStatusFilter] = useState('active');
 
   // Estados del modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -75,7 +78,7 @@ export default function Usuarios() {
     setLoading(true);
     try {
       const { data } = await axios.get('/api/users', {
-        params: { page, per_page: perPage, search: searchTerm.trim(), role: roleFilter },
+        params: { page, per_page: perPage, search: searchTerm.trim(), role: roleFilter, status: statusFilter },
       });
       if (requestId !== listRequest.current) return;
       if (page > data.last_page) {
@@ -101,7 +104,7 @@ export default function Usuarios() {
     listRequest.current++;
     const timer = setTimeout(() => fetchUsers(), 250);
     return () => clearTimeout(timer);
-  }, [searchTerm, roleFilter, perPage]);
+  }, [searchTerm, roleFilter, statusFilter, perPage]);
 
   useEffect(() => {
     axios.get('/api/projects')
@@ -254,15 +257,15 @@ export default function Usuarios() {
     }
   }, { form: true });
 
-  // Eliminar usuario
+  // Dar de baja el acceso manteniendo el historial operativo.
   const [handleEliminarUsuario, handleEliminarUsuarioPending] = useSingleSubmit(async (user) => {
-    if (user.id === 1) {
-      alert('Por seguridad no es posible eliminar al Administrador Principal del sistema.');
+    if (user.roles?.some((role) => role.name === 'Super Admin')) {
+      alert('No es posible dar de baja una cuenta de Super Admin.');
       return;
     }
 
     const confirmar = window.confirm(
-      `¿Estás seguro de eliminar al usuario "${user.name}" (${user.email})? Esta acción revocará todos sus accesos al sistema.`
+      `Dar de baja a "${user.name}" (${user.email}). El usuario perderá el acceso al sistema inmediatamente, pero todos sus recibos, clientes y registros históricos se conservarán intactos.`
     );
     if (!confirmar) return;
 
@@ -270,16 +273,32 @@ export default function Usuarios() {
       const res = await axios.delete(`/api/users/${user.id}`);
       setToastMessage({
         type: 'success',
-        text: res.data?.message || `Usuario "${user.name}" eliminado con éxito.`,
+        text: res.data?.message || `Usuario "${user.name}" dado de baja. Su historial se conserva.`,
       });
-      fetchUsers(pagination.current_page);
+      await fetchUsers(pagination.current_page);
     } catch (err) {
       if (err?.isDuplicateBlocked) return;
-      console.error('Error al eliminar usuario:', err);
-      const msg = err.response?.data?.message || 'Error al eliminar el usuario.';
+      console.error('Error al dar de baja al usuario:', err);
+      const msg = err.response?.data?.message || 'No se pudo dar de baja al usuario.';
       setToastMessage({
         type: 'warning',
         text: msg,
+      });
+    } finally {
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  });
+
+  const [handleReactivateUser, handleReactivateUserPending] = useSingleSubmit(async (user) => {
+    try {
+      const { data } = await axios.post(`/api/users/${user.id}/reactivate`);
+      setToastMessage({ type: 'success', text: data.message || `Usuario "${user.name}" reactivado.` });
+      await fetchUsers(pagination.current_page);
+    } catch (err) {
+      if (err?.isDuplicateBlocked) return;
+      setToastMessage({
+        type: 'error',
+        text: err.response?.data?.message || 'No se pudo reactivar al usuario.',
       });
     } finally {
       setTimeout(() => setToastMessage(null), 5000);
@@ -401,6 +420,19 @@ export default function Usuarios() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-2" aria-label="Estado de las cuentas">
+        {[
+          { value: 'active', label: 'Activos' },
+          { value: 'inactive', label: 'Dados de Baja' },
+          { value: 'all', label: 'Todos' },
+        ].map(({ value, label }) => (
+          <button key={value} type="button" aria-pressed={statusFilter === value} onClick={() => setStatusFilter(value)}
+            className={`min-h-[42px] rounded-md border px-3 text-xs font-semibold ${statusFilter === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Barra de Búsqueda y Filtros Rápidos */}
       <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
         <div className="relative w-full sm:w-80">
@@ -469,7 +501,8 @@ export default function Usuarios() {
                   const isUserSuperAdmin = roleName === 'Super Admin';
                   const isUserAdmin = roleName === 'Administrador';
                   const isUserTopo = roleName === 'Topógrafo';
-                  const canResetPassword = user.id !== 1
+                  const inactive = isUserInactive(user);
+                  const canResetPassword = !inactive && user.id !== 1
                     && !user.roles?.some((role) => role.name === 'Super Admin')
                     && user.roles?.some((role) => ['Administrador', 'Asesor Comercial', 'Topógrafo'].includes(role.name));
                   const assignedProjects = user.assigned_projects || [];
@@ -479,6 +512,7 @@ export default function Usuarios() {
                       <td className="py-3 px-4">
                         <div className="font-bold text-slate-900 flex items-center gap-1.5">
                           <span>{user.name}</span>
+                          <InactiveUserBadge user={user} />
                           {user.password_reset_requested && (
                             <span className="rounded border border-rose-200 bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800">
                               Solicitó cambio de clave
@@ -554,7 +588,7 @@ export default function Usuarios() {
                               <span className="text-[11px] text-amber-600 font-semibold">Sin proyectos asignados</span>
                             )}
 
-                            <button
+                            {!inactive && <button
                               type="button"
                               onClick={() => handleOpenAssignProjectsModal(user)}
                               className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded transition cursor-pointer mt-0.5"
@@ -562,7 +596,7 @@ export default function Usuarios() {
                             >
                               <Plus className="w-3 h-3" />
                               <span>+ Asignar / Cambiar Proyectos</span>
-                            </button>
+                            </button>}
                           </div>
                         ) : (
                           <span className="text-[11px] text-slate-400 italic">N/A</span>
@@ -578,6 +612,7 @@ export default function Usuarios() {
                           <button
                             type="button"
                             title="Editar Usuario"
+                            disabled={inactive}
                             onClick={() => handleAbrirEditar(user)}
                             className="p-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition cursor-pointer"
                           >
@@ -595,10 +630,19 @@ export default function Usuarios() {
                               <KeyRound className="h-3.5 w-3.5" />
                             </button>
                           )}
-                          {user.id !== 1 && (
+                          {inactive && (
+                            <ActionButton loading={handleReactivateUserPending}
+                              type="button"
+                              title="Reactivar usuario"
+                              onClick={() => handleReactivateUser(user)}
+                              className="inline-flex min-h-[42px] items-center gap-1 rounded-md px-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">
+                              <RotateCcw className="h-3.5 w-3.5" /> Reactivar
+                            </ActionButton>
+                          )}
+                          {!inactive && !isUserSuperAdmin && (
                             <ActionButton loading={handleEliminarUsuarioPending}
                               type="button"
-                              title="Eliminar Usuario"
+                              title="Dar de baja al usuario"
                               onClick={() => handleEliminarUsuario(user)}
                               className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                             >

@@ -36,11 +36,11 @@ class AdminTask extends Model
     }
 
     /**
-     * Administrador al que fue asignada la tarea.
+     * Administrador o Asesor Comercial al que fue asignada la tarea.
      */
     public function assignedTo(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'assigned_to');
+        return $this->belongsTo(User::class, 'assigned_to')->withTrashed();
     }
 
     /**
@@ -48,6 +48,6 @@ class AdminTask extends Model
      */
     public function assignedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'assigned_by');
+        return $this->belongsTo(User::class, 'assigned_by')->withTrashed();
     }
 }

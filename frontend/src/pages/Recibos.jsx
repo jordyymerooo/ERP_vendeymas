@@ -5,6 +5,7 @@ import ReceiptSequenceDialog from '../components/ReceiptSequenceDialog';
 import { useAuth } from '../context/AuthContext';
 import { getAuthenticatedRole } from '../utils/roleRoutes';
 import Pagination from '../components/Pagination';
+import InactiveUserBadge from '../components/InactiveUserBadge';
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DirectPaymentModal from '../components/DirectPaymentModal';
@@ -767,6 +768,10 @@ export default function Recibos({ openDirectPaymentModal = false }) {
                             }`}
                           >
                             {p.receipt_code || p.receipt_number}
+                          </span>
+                          <span className="inline-flex flex-wrap items-center gap-1 text-[10px] font-medium text-slate-500">
+                            Emisor: {p.cashier?.name || p.cashier_name || 'Sin emisor registrado'}
+                            <InactiveUserBadge user={p.cashier} />
                           </span>
                           {p.receipt_book && (
                             <span

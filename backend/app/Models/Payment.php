@@ -71,7 +71,7 @@ class Payment extends Model
      */
     public function cashier(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->belongsTo(User::class, 'user_id')->withTrashed();
     }
 
     /**
@@ -79,7 +79,7 @@ class Payment extends Model
      */
     public function voidedByUser(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'voided_by');
+        return $this->belongsTo(User::class, 'voided_by')->withTrashed();
     }
 
     /**

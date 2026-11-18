@@ -19,6 +19,13 @@
 /storage/*.key
 /storage/pail
 /vendor
+/.env.*
+!/.env.example
+/storage/app/public/recibos/*
+/storage/app/backup-temp/
+*.sql
+*.tar
+*.dump
 Homestead.json
 Homestead.yaml
 Thumbs.db
